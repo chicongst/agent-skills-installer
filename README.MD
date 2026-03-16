@@ -15,16 +15,18 @@ Installs a curated set of developer skills (planner, code review, debugging, arc
 
 Install with one command:
 
-curl -fsSL https://raw.githubusercontent.com/YOURNAME/agent-skills-installer/main/install.sh | bash
-
+```sh
+curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/main/install.sh | bash
+```
 Install all skills:
 
-curl -fsSL https://raw.githubusercontent.com/YOURNAME/agent-skills-installer/main/install.sh | bash -s -- --bundle all
-
+```sh
+curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/main/install.sh | bash -s -- --bundle all
+```
 Install for Windsurf:
-
-curl -fsSL https://raw.githubusercontent.com/YOURNAME/agent-skills-installer/main/install.sh | bash -s -- --target windsurf
-
+```sh
+curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/main/install.sh | bash -s -- --target windsurf
+```
 ---
 
 ## Install Paths
@@ -83,29 +85,30 @@ fullstack
 ## Usage
 
 Basic install
-
+```sh
 ./setup_agent_skills.sh
-
+```
 Install bundle
 
+```sh
 ./setup_agent_skills.sh --bundle backend
-
+```
 Install to workspace
-
+```sh
 ./setup_agent_skills.sh --scope workspace
-
+```
 Install for Windsurf
-
+```sh
 ./setup_agent_skills.sh --target windsurf
-
+```
 Verify installation
-
+```sh
 ./setup_agent_skills.sh --verify
-
+```
 Dry run
-
+```sh
 ./setup_agent_skills.sh --dry-run
-
+```
 ---
 
 ## Using Skills
@@ -129,13 +132,13 @@ Skills may also be triggered automatically by context.
 ## Import Custom Skills
 
 From GitHub
-
+```sh
 ./setup_agent_skills.sh --import-github https://github.com/chicongst/agent-skills-installer
-
+```
 From local directory
-
+```sh
 ./setup_agent_skills.sh --import-dir ./skills
-
+```
 Skill structure
 
 skill-name/
