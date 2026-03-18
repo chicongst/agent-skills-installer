@@ -7,7 +7,7 @@ Supports:
 - Claude Code
 - Windsurf
 
-Installs a curated set of developer skills (planner, code review, debugging, architecture, etc.) into the correct directories automatically.
+Installs a curated set of developer skills (code review, debugging, architecture, etc.) into the correct directories automatically.
 
 ---
 
@@ -41,7 +41,7 @@ Windsurf
 
 Workspace install
 
-./.claude/skills  
+./.claude/skills
 ./.windsurf/skills
 
 ---
@@ -50,7 +50,6 @@ Workspace install
 
 core
 
-- planner
 - architect
 - code-review
 - debug
@@ -59,26 +58,24 @@ core
 - security-review
 - docs-writer
 - api-design
-- release-readiness
+- algorithm-review
+- mastery
 
-backend
+backend = core +
 
 - db-design
 - migration-safety
-- incident-triage
+- sre-engineering
 - performance-review
 
-frontend
+frontend = core (same as core)
 
-- ui-review
-- accessibility-review
-- ux-copy
+fullstack = backend +
 
-fullstack
-
-- requirements-refiner
 - pr-review
 - changelog
+
+all = fullstack (all skills)
 
 ---
 
@@ -115,15 +112,15 @@ Dry run
 
 Claude Code
 
-/planner  
-/code-review  
-/debug  
+/architect
+/code-review
+/debug
 
 Windsurf
 
-@planner  
-@code-review  
-@debug  
+@architect
+@code-review
+@debug
 
 Skills may also be triggered automatically by context.
 

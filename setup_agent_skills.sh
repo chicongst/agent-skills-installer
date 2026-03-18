@@ -89,7 +89,6 @@ skills_for_bundle() {
   case "$1" in
     core)
       cat <<'EOF'
-planner
 architect
 code-review
 debug
@@ -98,12 +97,12 @@ test-writer
 security-review
 docs-writer
 api-design
-release-readiness
+algorithm-review
+mastery
 EOF
       ;;
     backend)
       cat <<'EOF'
-planner
 architect
 code-review
 debug
@@ -112,16 +111,16 @@ test-writer
 security-review
 docs-writer
 api-design
-release-readiness
 db-design
 migration-safety
-incident-triage
+sre-engineering
 performance-review
+algorithm-review
+mastery
 EOF
       ;;
     frontend)
       cat <<'EOF'
-planner
 architect
 code-review
 debug
@@ -130,15 +129,12 @@ test-writer
 security-review
 docs-writer
 api-design
-release-readiness
-ui-review
-accessibility-review
-ux-copy
+algorithm-review
+mastery
 EOF
       ;;
     fullstack)
       cat <<'EOF'
-planner
 architect
 code-review
 debug
@@ -147,22 +143,18 @@ test-writer
 security-review
 docs-writer
 api-design
-release-readiness
 db-design
 migration-safety
-incident-triage
+sre-engineering
 performance-review
-ui-review
-accessibility-review
-ux-copy
-requirements-refiner
 pr-review
 changelog
+algorithm-review
+mastery
 EOF
       ;;
     all)
       cat <<'EOF'
-planner
 architect
 code-review
 debug
@@ -171,17 +163,14 @@ test-writer
 security-review
 docs-writer
 api-design
-release-readiness
 db-design
 migration-safety
-incident-triage
+sre-engineering
 performance-review
-ui-review
-accessibility-review
-ux-copy
-requirements-refiner
 pr-review
 changelog
+algorithm-review
+mastery
 EOF
       ;;
     *)
@@ -380,12 +369,12 @@ $(skills_for_bundle core | sed 's/^/  - /')
 
 Usage after install:
   Claude:
-    /planner
+    /architect
     /code-review
     /debug
 
   Windsurf:
-    @planner
+    @architect
     @code-review
     @debug
 EOF
@@ -525,10 +514,10 @@ EOF
   prefix="$(manual_prefix)"
   if [[ -n "$prefix" ]]; then
     cat <<EOF
-  ${prefix}planner
   ${prefix}architect
   ${prefix}code-review
   ${prefix}debug
+  ${prefix}mastery
 EOF
   else
     cat <<'EOF'

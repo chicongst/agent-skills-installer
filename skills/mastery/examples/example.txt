@@ -1,0 +1,100 @@
+# Example: senior-engineering skill in action
+
+## User Request
+
+"Write a function to send notification emails to all users who haven't logged in for 30 days"
+
+## Without Skill (naive approach)
+
+```python
+def send_inactive_notifications():
+    users = db.query("SELECT * FROM users WHERE last_login < NOW() - INTERVAL 30 DAY")
+    for user in users:
+        send_email(user["email"], "We miss you!", f"Hi {user['name']}, come back!")
+        db.query(f"UPDATE users SET notified = 1 WHERE id = {user['id']}")
+    return {"sent": len(users)}
+```
+
+Problems:
+- Loads ALL inactive users into memory (could be millions)
+- No error handling — one email failure stops everything
+- SQL injection via string interpolation
+- No logging or tracking
+- No rate limiting — could overwhelm email provider
+- Not idempotent — no check if already notified
+
+## With Skill (senior approach)
+
+```python
+import logging
+from datetime import datetime, timedelta
+
+logger = logging.getLogger(__name__)
+
+BATCH_SIZE = 100
+MAX_RETRIES = 3
+
+def send_inactive_notifications(
+    db,
+    email_service,
+    inactive_days=30,
+    batch_size=BATCH_SIZE,
+):
+    cutoff = datetime.utcnow() - timedelta(days=inactive_days)
+    total_sent = 0
+    total_failed = 0
+    last_id = 0
+
+    while True:
+        users = db.execute(
+            """
+            SELECT id, email, name FROM users
+            WHERE last_login < :cutoff
+              AND notified_at IS NULL
+              AND id > :last_id
+            ORDER BY id
+            LIMIT :batch_size
+            """,
+            {"cutoff": cutoff, "last_id": last_id, "batch_size": batch_size},
+        )
+
+        if not users:
+            break
+
+        for user in users:
+            last_id = user["id"]
+            try:
+                email_service.send(
+                    to=user["email"],
+                    template="inactive_reminder",
+                    context={"name": user["name"]},
+                )
+                db.execute(
+                    "UPDATE users SET notified_at = :now WHERE id = :id",
+                    {"now": datetime.utcnow(), "id": user["id"]},
+                )
+                total_sent += 1
+            except Exception:
+                logger.exception(
+                    "Failed to send notification",
+                    extra={"user_id": user["id"]},
+                )
+                total_failed += 1
+
+    logger.info(
+        "Inactive notification batch complete",
+        extra={"sent": total_sent, "failed": total_failed},
+    )
+    return {"sent": total_sent, "failed": total_failed}
+```
+
+## Principles Applied Silently
+
+- Chunking/batch processing: cursor-based pagination with LIMIT + last_id
+- Query safety: parameterized queries, select only needed columns
+- Idempotency: notified_at check prevents duplicate sends
+- Error isolation: one failure doesn't stop the batch
+- Dependency injection: db and email_service injected for testability
+- Structured logging: context-rich, no PII leakage
+- Configuration: batch_size and inactive_days are parameters, not hardcoded
+- Resumable: cursor-based (last_id) allows restart from any point

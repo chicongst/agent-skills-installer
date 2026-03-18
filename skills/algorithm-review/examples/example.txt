@@ -1,0 +1,93 @@
+# Example: /algorithm-review
+
+## User Input (code to review)
+
+```python
+def find_duplicate_orders(orders):
+    duplicates = []
+    for i in range(len(orders)):
+        for j in range(i + 1, len(orders)):
+            if orders[i]["product_id"] == orders[j]["product_id"] and \
+               orders[i]["user_id"] == orders[j]["user_id"]:
+                duplicates.append(orders[j])
+    return duplicates
+
+
+def get_top_products(orders, products):
+    result = []
+    for product in products:
+        count = 0
+        for order in orders:
+            if order["product_id"] == product["id"]:
+                count += 1
+        result.append({"product": product, "count": count})
+    result.sort(key=lambda x: x["count"], reverse=True)
+    return result[:10]
+
+
+def calculate_daily_revenue(transactions, start_day, end_day):
+    total = 0
+    for t in transactions:
+        if start_day <= t["day"] <= end_day:
+            total += t["amount"]
+    return total
+```
+
+## Skill Output
+
+# Algorithm Review: Order Processing Module
+
+## Finding 1: Duplicate Detection — Hash Set
+**Current**: O(n²) — nested loop comparing every pair
+**Optimized**: O(n)
+**Algorithm**: Frequency Map / Hash Set
+
+```python
+def find_duplicate_orders(orders):
+    seen = set()
+    duplicates = []
+    for order in orders:
+        key = (order["product_id"], order["user_id"])
+        if key in seen:
+            duplicates.append(order)
+        else:
+            seen.add(key)
+    return duplicates
+```
+
+With 10,000 orders: ~50M comparisons → ~10K hash lookups. Significant.
+
+## Finding 2: Top Products — Frequency Map
+**Current**: O(n × m) — for each product, scan all orders
+**Optimized**: O(n + m)
+**Algorithm**: Frequency Map + Heap (or sort)
+
+```python
+from collections import Counter
+
+def get_top_products(orders, products):
+    product_count = Counter(o["product_id"] for o in orders)
+    product_map = {p["id"]: p for p in products}
+    top_ids = product_count.most_common(10)
+    return [{"product": product_map[pid], "count": c} for pid, c in top_ids]
+```
+
+One pass to count, one pass to map. Counter.most_common uses a heap internally — O(n log 10).
+
+## Finding 3: Daily Revenue — Prefix Sum
+**Current**: O(n) per query — scans all transactions each time
+**Optimized**: O(1) per query after O(n) preprocessing
+**Algorithm**: Prefix Sum
+
+```python
+def build_revenue_index(transactions):
+    daily = {}
+    for t in transactions:
+        daily[t["day"]] = daily.get(t["day"], 0) + t["amount"]
+    return daily
+
+def calculate_daily_revenue(daily_index, start_day, end_day):
+    return sum(daily_index.get(d, 0) for d in range(start_day, end_day + 1))
+```
+
+If `calculate_daily_revenue` is called repeatedly with different ranges, precompute once, query many. For single call, original is fine.
