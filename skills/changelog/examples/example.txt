@@ -1,0 +1,120 @@
+# Example: /changelog
+
+## User Input
+Write the changelog for v1.5.0. Here are the merged PRs:
+
+- #234: Add CSV export for reports (new feature)
+- #241: Fix dashboard loading spinner never stopping for empty datasets
+- #245: Upgrade React from 18.2 to 18.3 (minor, no breaking changes)
+- #251: Add dark mode support
+- #256: Deprecate GET /api/v1/reports — use /api/v2/reports instead
+- #261: Fix: users with special characters in name couldn't update profile
+- #267: Performance: report generation 40% faster via query optimization
+- #271: Breaking change: removed the `color` field from GET /api/users response
+  (was deprecated in v1.4.0, use `theme.primary_color` instead)
+
+## Skill Output
+
+# Changelog: v1.5.0 — 2024-03-15
+
+---
+
+## User-Facing Changes
+
+### ⚠️ Breaking Changes
+
+**API: Removed `color` field from user response**
+The `color` field has been removed from `GET /api/users` and `GET /api/users/{id}`
+responses. This field was deprecated in v1.4.0.
+
+**Migration**: Replace `user.color` with `user.theme.primary_color` in your integration.
+```json
+// Before (v1.4 and earlier)
+{ "id": "usr_abc", "color": "#3B82F6", ... }
+
+// After (v1.5+)
+{ "id": "usr_abc", "theme": { "primary_color": "#3B82F6" }, ... }
+```
+
+---
+
+### ✨ New Features
+
+**Dark mode**
+The app now supports dark mode. Follows your system preference automatically,
+or set your preference in Settings → Appearance. (#251)
+
+**CSV export for reports**
+Export any report as a CSV file from the report view. Use the "Export" button
+in the top-right corner of any report. Large reports are processed in the
+background — you'll receive an email with a download link when ready. (#234)
+
+---
+
+### 🚀 Improvements
+
+**Reports generate 40% faster**
+Report generation time has been significantly reduced through database query
+optimization. A report that previously took 10 seconds now completes in ~6 seconds.
+No action needed. (#267)
+
+---
+
+### 🐛 Bug Fixes
+
+**Dashboard loading spinner no longer hangs on empty data**
+The loading spinner on the dashboard now correctly stops when a dataset returns
+no results. Previously it would spin indefinitely. (#241)
+
+**Users with special characters in name can update their profile**
+Users whose names contain accented characters (é, ñ, ü, etc.) were unable to
+save profile updates due to an encoding issue. This is now fixed. (#261)
+
+---
+
+### 🕐 Deprecations
+
+**API v1 Reports endpoint deprecated**
+`GET /api/v1/reports` is deprecated and will be removed in **v2.0** (Q2 2024).
+
+**Migrate to**: `GET /api/v2/reports`
+See [API v2 migration guide](https://docs.example.com/api/v2-migration) for full details. (#256)
+
+---
+
+## Developer Notes
+
+### Breaking Changes — Action Required
+
+**Remove `user.color` references from your code** before upgrading to v1.5.0.
+Search your codebase for `user.color`, `response.color`, or `.color` in any
+code that processes user API responses.
+
+### Dependencies Updated
+| Package | From | To | Notes |
+|---------|------|----|-------|
+| react | 18.2.0 | 18.3.0 | Minor — no breaking changes |
+| react-dom | 18.2.0 | 18.3.0 | Minor — no breaking changes |
+
+### API Deprecation Timeline
+| Endpoint | Deprecated | Removal |
+|----------|-----------|---------|
+| GET /api/v1/reports | v1.5.0 (this release) | v2.0 (Q2 2024) |
+| GET /api/v1/users (color field) | v1.4.0 | REMOVED in v1.5.0 ✅ |
+
+### Known Issues
+- Dark mode: PDF exports do not yet respect dark mode theme (tracked in #279)
+- CSV export: Column headers are in English regardless of user locale (#280)
+
+---
+
+## Upgrade Instructions
+
+**From v1.4.x → v1.5.0:**
+
+1. Update `user.color` → `user.theme.primary_color` in your integration code
+2. Test against staging before deploying to production
+3. No database migrations required
+4. No infrastructure changes required
+
+**Estimated upgrade time**: < 1 hour (if using `user.color` field); 0 minutes if not.

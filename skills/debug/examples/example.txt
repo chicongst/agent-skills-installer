@@ -1,0 +1,80 @@
+# Example: /debug
+
+## User Input
+Our order processing service intermittently drops orders — about 1 in 500 orders
+never gets processed. No errors in logs. Started happening after we scaled from
+2 to 5 worker instances last Tuesday. Orders are pulled from a RabbitMQ queue.
+Each worker polls the queue, processes the order, then ACKs.
+
+## Skill Output
+
+# Debug Report: Intermittent Order Loss (~1/500)
+
+## Symptoms
+- **Observed**: ~0.2% of orders never processed, no error logs
+- **Expected**: All orders processed exactly once
+- **Frequency**: Consistent rate, not random spikes
+- **Started**: After scaling from 2 → 5 worker instances
+- **Key detail**: Silently lost — no error, no dead-letter queue entry
+
+## Reproduction
+Difficult to reproduce deterministically. Steps to increase probability:
+1. Run 5 workers simultaneously against a queue with 500+ messages
+2. Send rapid bursts (50+ messages/second) while workers are mid-process
+3. Count messages published vs orders in DB — look for discrepancy
+
+## Hypotheses
+| # | Hypothesis | Probability | Validation Step |
+|---|-----------|-------------|-----------------|
+| 1 | Message ACK'd before processing completes — crash between ACK and DB write causes silent loss | **High** | Check worker code: where exactly is ACK called relative to DB commit? |
+| 2 | Two workers both dequeue same message (prefetch misconfiguration) — one succeeds, one fails silently | **High** | Enable RabbitMQ management UI, watch delivery count on messages |
+| 3 | Worker timeout kills processing mid-flight, no requeue | **Medium** | Check worker timeout config; look for SIGKILL in system logs |
+| 4 | DB connection pool exhaustion with 5 workers — writes silently fail | **Low** | Check DB connection pool metrics; look for pool timeout errors |
+
+## Investigation
+
+**Hypothesis 1 check** — review worker code:
+```python
+# BUGGY pattern (likely culprit):
+message = channel.basic_get(queue='orders')
+channel.basic_ack(message.delivery_tag)  # ← ACK BEFORE processing!
+process_order(message.body)              # ← if this fails, message is gone
+```
+
+This explains the symptom perfectly:
+- ACK removes message from queue immediately
+- If process_order() crashes or times out → order silently lost
+- No error log because the exception may be swallowed by the worker loop
+- Rate increases with more workers because more concurrent processing = more crash surface
+
+## Root Cause
+**What**: Messages are ACK'd before processing completes
+**Where**: Worker message handler — ACK call precedes DB write
+**Why**: Developer assumed ACK = "received" not "processed" — common RabbitMQ misunderstanding
+
+## Fix
+```python
+# CORRECT pattern: ACK only after successful processing
+message = channel.basic_get(queue='orders')
+try:
+    process_order(message.body)
+    channel.basic_ack(message.delivery_tag)   # ACK after success
+except Exception as e:
+    log.error(f"Order processing failed: {e}")
+    channel.basic_nack(message.delivery_tag, requeue=True)  # NACK → requeue
+```
+
+Also add dead-letter queue for messages that fail repeatedly:
+```python
+# In queue declaration — messages that NACK 3+ times go to orders.dlq
+channel.queue_declare('orders', arguments={
+    'x-dead-letter-exchange': 'orders.dlq',
+    'x-delivery-limit': 3
+})
+```
+
+## Verification
+- [ ] Fix deployed — monitor order loss rate (should drop to 0%)
+- [ ] Regression test: kill a worker mid-processing, confirm order requeued
+- [ ] Add metric: `orders.acked_before_processed` (should always be 0)
+- [ ] Check dead-letter queue — orders that were already lost before fix may be there

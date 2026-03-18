@@ -1,0 +1,171 @@
+# Example: /migration-safety
+
+## User Input
+We need to split the `name` column in our `users` table into `first_name` and
+`last_name`. Table has 8 million rows, live 24/7 with zero-downtime requirement.
+Both old code (reading `name`) and new code (reading `first_name`/`last_name`)
+will run simultaneously during the transition.
+
+## Skill Output
+
+# Migration Safety Review: Split users.name → first_name + last_name
+
+## Change Summary
+Rename/split `users.name VARCHAR(255)` into `users.first_name VARCHAR(100)` +
+`users.last_name VARCHAR(100)`. 8M rows, no downtime, dual-read compatibility required.
+
+## Risk Assessment
+
+| Risk | Severity | Likelihood | Mitigation |
+|------|----------|-----------|------------|
+| Table lock on column add | High | Low | Use nullable columns with no DEFAULT |
+| Backfill overwhelms DB | High | Medium | Batch updates with rate limiting |
+| Old code breaks after name column removed | Critical | High | Expand-contract: keep name until all code migrated |
+| Incorrect name splitting (e.g., "Mary Jane Watson") | Medium | High | Manual review of edge cases before backfill |
+
+## Unsafe Approach (DO NOT DO)
+
+```sql
+-- This will lock the table for minutes on 8M rows:
+ALTER TABLE users RENAME COLUMN name TO first_name;
+ALTER TABLE users ADD COLUMN last_name VARCHAR(100);
+UPDATE users SET first_name = split_part(name, ' ', 1),
+                 last_name = split_part(name, ' ', 2);
+```
+
+## Safe Execution Sequence (Expand -> Migrate -> Contract)
+
+### Step 1 — EXPAND: Add new columns (nullable, no default)
+**Duration**: ~100ms regardless of table size — no lock
+```sql
+ALTER TABLE users ADD COLUMN first_name VARCHAR(100);
+ALTER TABLE users ADD COLUMN last_name VARCHAR(100);
+```
+**Verification**: `\d users` — confirm both columns exist, nullable, null for all rows.
+
+### Step 2 — Deploy Code Phase 1: Dual-write
+Deploy code that **writes to both** `name` AND `first_name`/`last_name`, but **reads from `name`**.
+This ensures new rows have all columns populated.
+
+```python
+# Phase 1 code (writes to all, reads from name)
+def create_user(first_name, last_name):
+    full_name = f"{first_name} {last_name}"
+    db.execute("""
+        INSERT INTO users (name, first_name, last_name)
+        VALUES (%s, %s, %s)
+    """, (full_name, first_name, last_name))
+```
+
+### Step 3 — MIGRATE: Backfill existing rows in batches
+**Duration**: ~20-40 minutes for 8M rows (safe estimate)
+
+```python
+# Run as a background job, NOT during deploy
+import time
+
+BATCH_SIZE = 1000
+SLEEP_SECONDS = 0.1  # rate limiting — adjust based on DB load
+
+def backfill_names():
+    last_id = None
+    total_updated = 0
+
+    while True:
+        if last_id:
+            rows = db.query("""
+                SELECT id, name FROM users
+                WHERE id > %s AND first_name IS NULL
+                ORDER BY id LIMIT %s
+            """, (last_id, BATCH_SIZE))
+        else:
+            rows = db.query("""
+                SELECT id, name FROM users
+                WHERE first_name IS NULL
+                ORDER BY id LIMIT %s
+            """, (BATCH_SIZE,))
+
+        if not rows:
+            break
+
+        for row in rows:
+            parts = row['name'].split(' ', 1)
+            first = parts[0]
+            last = parts[1] if len(parts) > 1 else ''
+            db.execute("""
+                UPDATE users SET first_name = %s, last_name = %s
+                WHERE id = %s
+            """, (first, last, row['id']))
+
+        last_id = rows[-1]['id']
+        total_updated += len(rows)
+        print(f"Backfilled {total_updated} rows...")
+        time.sleep(SLEEP_SECONDS)
+
+    print(f"Backfill complete: {total_updated} rows")
+```
+
+**Monitor during backfill**:
+```sql
+-- Progress check
+SELECT COUNT(*) FROM users WHERE first_name IS NULL;
+-- DB load check
+SELECT * FROM pg_stat_activity WHERE state = 'active';
+```
+
+### Step 4 — Add NOT NULL constraints (after backfill complete)
+```sql
+-- Verify zero nulls first:
+SELECT COUNT(*) FROM users WHERE first_name IS NULL OR last_name IS NULL;
+-- Should return 0
+
+ALTER TABLE users ALTER COLUMN first_name SET NOT NULL;
+ALTER TABLE users ALTER COLUMN last_name SET NOT NULL;
+```
+
+### Step 5 — Deploy Code Phase 2: Read from new columns
+Deploy code that reads from `first_name`/`last_name` but still writes `name` for backward compat.
+**Rollback**: Revert to Phase 1 code (reads from `name` again).
+
+### Step 6 — CONTRACT: Drop old column (next release, separate PR)
+Only after Phase 2 has been stable for 1+ week:
+```sql
+ALTER TABLE users DROP COLUMN name;
+```
+
+## Compatibility Matrix
+
+| Code Phase | name column | first/last columns | Compatible |
+|-----------|-------------|-------------------|------------|
+| Old code (before migration) | Reads/writes | N/A | Yes (Step 1 safe) |
+| Phase 1 (dual-write) | Writes | Writes | Yes |
+| Phase 2 (new reads) | Writes (compat) | Reads/writes | Yes |
+| After column drop | Removed | Reads/writes | Yes |
+
+## Rollback Plan
+
+- **Steps 1-3**: Rollback by deploying old code. `name` column untouched. Zero impact.
+- **Step 4 (NOT NULL)**: `ALTER TABLE users ALTER COLUMN first_name DROP NOT NULL;`
+- **Step 5**: Revert to Phase 1 code deploy.
+- **Step 6 (DROP COLUMN)**: Column gone — restore from backup or re-add + re-backfill. **No easy rollback — do not rush this step.**
+
+## Validation Queries
+
+```sql
+-- After backfill: confirm zero nulls
+SELECT COUNT(*) FROM users WHERE first_name IS NULL;
+
+-- Spot check name splitting quality
+SELECT name, first_name, last_name FROM users
+WHERE name NOT LIKE first_name || ' ' || last_name
+LIMIT 20;  -- Review these manually — hyphenated names, initials, etc.
+
+-- After Phase 2: confirm reads working
+SELECT first_name, last_name FROM users LIMIT 10;
+```
+
+## Go / No-Go
+**SAFE** — with the expand-contract sequence above. Total timeline: ~1 week across 3 deploys.
+
+Do NOT compress into a single migration + deploy. The zero-downtime guarantee
+requires the 3-phase approach.

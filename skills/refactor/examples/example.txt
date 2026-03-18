@@ -1,0 +1,124 @@
+# Example: /refactor
+
+## User Input (code to refactor)
+
+```python
+def register_user(data):
+    if not data.get('email'):
+        return False, "Email required"
+    if '@' not in data['email'] or '.' not in data['email'].split('@')[1]:
+        return False, "Invalid email"
+    if not data.get('password'):
+        return False, "Password required"
+    if len(data['password']) < 8:
+        return False, "Password too short"
+    if not any(c.isupper() for c in data['password']):
+        return False, "Password needs uppercase"
+    if not any(c.isdigit() for c in data['password']):
+        return False, "Password needs digit"
+    existing = db.find_one({'email': data['email']})
+    if existing:
+        return False, "Email already registered"
+    hashed = hashlib.md5(data['password'].encode()).hexdigest()
+    user = {
+        'email': data['email'],
+        'password': hashed,
+        'name': data.get('name', ''),
+        'created_at': datetime.now()
+    }
+    db.insert(user)
+    send_email(data['email'], 'Welcome!', f"Hi {data.get('name', 'there')}, thanks for joining!")
+    send_email('admin@company.com', 'New user', f"New user registered: {data['email']}")
+    log.info(f"User registered: {data['email']}")
+    return True, "Registration successful"
+```
+
+## Skill Output
+
+# Refactoring Plan: register_user()
+
+## Current Issues
+| Issue | Location | Impact |
+|-------|----------|--------|
+| Security bug: MD5 used for password hashing | Line 12 | Critical — not a refactor blocker but must fix |
+| Function does 4 things: validate, check duplicate, save, notify | All | Hard to test, hard to change |
+| Inline validation rules hard to read and extend | Lines 2-10 | New rules require editing this function |
+| Email notification logic mixed with registration logic | Lines 15-17 | Can't change notification behavior without touching registration |
+
+## Refactoring Steps
+
+### Step 1: Extract validation into a dedicated function
+**Why**: Validation is independently testable and likely to grow (add phone, TOS acceptance, etc.)
+```python
+def validate_registration_data(data: dict) -> tuple[bool, str | None]:
+    """Returns (is_valid, error_message). error_message is None if valid."""
+    email = data.get('email', '').strip()
+    if not email:
+        return False, "Email required"
+    if not _is_valid_email(email):
+        return False, "Invalid email format"
+
+    password = data.get('password', '')
+    if not password:
+        return False, "Password required"
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters"
+    if not any(c.isupper() for c in password):
+        return False, "Password must contain at least one uppercase letter"
+    if not any(c.isdigit() for c in password):
+        return False, "Password must contain at least one digit"
+
+    return True, None
+
+def _is_valid_email(email: str) -> bool:
+    parts = email.split('@')
+    return len(parts) == 2 and '.' in parts[1] and len(parts[1]) > 2
+```
+
+### Step 2: Fix the security bug (separate commit — this is a bug fix, not refactoring)
+```python
+# Replace MD5 with bcrypt
+import bcrypt
+
+def _hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+```
+
+### Step 3: Extract notification side effects
+```python
+def _notify_registration(email: str, name: str) -> None:
+    display_name = name or 'there'
+    send_email(email, 'Welcome!', f"Hi {display_name}, thanks for joining!")
+    send_email('admin@company.com', 'New user', f"New user registered: {email}")
+```
+
+### Step 4: Clean register_user — now just orchestration
+```python
+def register_user(data: dict) -> tuple[bool, str]:
+    is_valid, error = validate_registration_data(data)
+    if not is_valid:
+        return False, error
+
+    email = data['email'].strip()
+    if db.find_one({'email': email}):
+        return False, "Email already registered"
+
+    user = {
+        'email': email,
+        'password': _hash_password(data['password']),
+        'name': data.get('name', '').strip(),
+        'created_at': datetime.utcnow(),
+    }
+    db.insert(user)
+    _notify_registration(email, user['name'])
+
+    log.info("User registered: %s", email)
+    return True, "Registration successful"
+```
+
+## Behavioral Guarantees
+- [ ] All existing validation rules preserved (same error messages)
+- [ ] Email duplicate check still runs
+- [ ] Both notification emails still sent on success
+- [ ] Return signature unchanged: (bool, str)
+- [ ] Tests written for validate_registration_data() independently

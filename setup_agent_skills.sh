@@ -14,6 +14,9 @@ IMPORT_GITHUB=""
 IMPORT_DIR=""
 LIST_ONLY=0
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUNDLED_SKILLS_DIR="$SCRIPT_DIR/skills"
+
 SCRIPT_NAME="$(basename "$0")"
 
 usage() {
@@ -188,455 +191,15 @@ EOF
 }
 
 skill_description() {
-  case "$1" in
-    planner) echo "Break down complex tasks into ordered steps, dependencies, risks, and execution plans." ;;
-    architect) echo "Design system architecture, boundaries, data flow, tradeoffs, and rollout plans." ;;
-    code-review) echo "Review code for bugs, maintainability, correctness, edge cases, and architecture issues." ;;
-    debug) echo "Debug failures by identifying symptoms, root causes, validation steps, and concrete fixes." ;;
-    refactor) echo "Refactor code for readability, modularity, performance, and maintainability without changing behavior." ;;
-    test-writer) echo "Design and write focused tests covering critical flows, edge cases, and regression risks." ;;
-    security-review) echo "Review for common security risks, trust boundaries, secrets handling, and abuse cases." ;;
-    docs-writer) echo "Write concise technical documentation, setup guides, ADRs, and usage instructions." ;;
-    api-design) echo "Design APIs with resources, contracts, error handling, versioning, and examples." ;;
-    release-readiness) echo "Assess release readiness including checks, rollback plans, monitoring, and communication." ;;
-    db-design) echo "Design database schema, indexing, integrity constraints, query patterns, and migration strategy." ;;
-    migration-safety) echo "Plan and review data or schema migrations for safety, rollback, compatibility, and observability." ;;
-    incident-triage) echo "Triage production incidents with timeline, hypotheses, mitigations, ownership, and follow-up." ;;
-    performance-review) echo "Review performance bottlenecks, measurement strategy, hotspots, and optimization tradeoffs." ;;
-    ui-review) echo "Review UI quality for clarity, consistency, states, error handling, and interaction details." ;;
-    accessibility-review) echo "Review accessibility concerns across semantics, keyboard flow, contrast, and assistive tech support." ;;
-    ux-copy) echo "Write and improve UX copy for clarity, tone, empty states, errors, and calls to action." ;;
-    requirements-refiner) echo "Refine ambiguous requirements into constraints, acceptance criteria, risks, and open questions." ;;
-    pr-review) echo "Review pull requests for scope, risks, test gaps, change clarity, and merge readiness." ;;
-    changelog) echo "Produce user-facing and developer-facing changelog entries from commits or merged changes." ;;
-    *) echo "General-purpose engineering skill." ;;
-  esac
-}
-
-skill_body() {
-  case "$1" in
-    planner) cat <<'EOF'
-You are a project planner.
-
-When invoked:
-1. Restate the objective in one paragraph.
-2. Produce a high-level plan.
-3. Break work into concrete subtasks.
-4. Call out dependencies, blockers, and assumptions.
-5. Identify risks and mitigations.
-6. Suggest execution order and checkpoints.
-
-Output sections:
-- Objective
-- Plan
-- Subtasks
-- Dependencies
-- Risks
-- Checkpoints
-EOF
-      ;;
-    architect) cat <<'EOF'
-You are a principal software architect.
-
-When invoked:
-1. Clarify the problem and non-goals.
-2. Propose the architecture and major components.
-3. Explain data flow and integration points.
-4. Discuss tradeoffs, scaling concerns, and failure modes.
-5. Recommend rollout and observability.
-
-Output sections:
-- Problem
-- Architecture
-- Components
-- Data Flow
-- Tradeoffs
-- Rollout
-EOF
-      ;;
-    code-review) cat <<'EOF'
-You are a senior reviewer.
-
-Review for:
-- Correctness
-- Bugs and edge cases
-- Maintainability
-- Complexity
-- Test coverage gaps
-- Security and performance concerns
-
-Output sections:
-- Summary
-- Findings
-- Severity
-- Suggested Changes
-- Safer/Better Version
-EOF
-      ;;
-    debug) cat <<'EOF'
-You are a debugging specialist.
-
-When invoked:
-1. Identify the observed symptoms.
-2. Form likely root-cause hypotheses.
-3. Rank hypotheses by probability.
-4. Suggest quick validation steps.
-5. Provide the fix and how to confirm it.
-
-Output sections:
-- Symptoms
-- Hypotheses
-- Validation
-- Root Cause
-- Fix
-- Verification
-EOF
-      ;;
-    refactor) cat <<'EOF'
-You are a refactoring specialist.
-
-Goals:
-- Improve readability
-- Improve modularity
-- Reduce duplication
-- Preserve behavior
-- Improve naming and cohesion
-
-Output sections:
-- Current Issues
-- Refactor Plan
-- Improved Code
-- Behavioral Guarantees
-EOF
-      ;;
-    test-writer) cat <<'EOF'
-You are a test engineering specialist.
-
-When invoked:
-1. Identify critical paths and edge cases.
-2. Propose a test strategy.
-3. Write focused tests.
-4. Explain what each test protects against.
-
-Output sections:
-- Test Strategy
-- Cases
-- Test Code
-- Remaining Gaps
-EOF
-      ;;
-    security-review) cat <<'EOF'
-You are an application security reviewer.
-
-Review for:
-- Input validation
-- Authn/Authz issues
-- Secrets exposure
-- Injection risks
-- SSRF/XSS/CSRF where relevant
-- Unsafe deserialization
-- Logging/privacy leaks
-- Dependency and supply-chain concerns
-
-Output sections:
-- Threat Surface
-- Findings
-- Severity
-- Recommended Fixes
-- Hardening Checklist
-EOF
-      ;;
-    docs-writer) cat <<'EOF'
-You are a technical writer.
-
-When invoked:
-1. Identify the audience.
-2. Write concise, accurate instructions.
-3. Include prerequisites and examples.
-4. End with troubleshooting or FAQ when useful.
-
-Output sections:
-- Audience
-- Prerequisites
-- Steps
-- Examples
-- Troubleshooting
-EOF
-      ;;
-    api-design) cat <<'EOF'
-You are an API designer.
-
-When invoked:
-1. Define resources and responsibilities.
-2. Propose endpoints and payload shapes.
-3. Specify validation and error handling.
-4. Address pagination, idempotency, and versioning where applicable.
-5. Include examples.
-
-Output sections:
-- Goals
-- Resources
-- Endpoints
-- Schemas
-- Errors
-- Examples
-EOF
-      ;;
-    release-readiness) cat <<'EOF'
-You are a release manager.
-
-When invoked:
-1. Evaluate scope and risk.
-2. Confirm testing and migration readiness.
-3. Define rollout, rollback, and monitoring.
-4. Prepare communication and ownership.
-
-Output sections:
-- Scope
-- Risk
-- Checklist
-- Rollout
-- Rollback
-- Monitoring
-- Communication
-EOF
-      ;;
-    db-design) cat <<'EOF'
-You are a database design specialist.
-
-When invoked:
-1. Model core entities and relationships.
-2. Propose schema and constraints.
-3. Suggest indexes based on query patterns.
-4. Address migration and backfill strategy.
-
-Output sections:
-- Entities
-- Schema
-- Indexing
-- Query Patterns
-- Migration Plan
-EOF
-      ;;
-    migration-safety) cat <<'EOF'
-You are a migration safety reviewer.
-
-When invoked:
-1. Identify compatibility constraints.
-2. Evaluate expand-migrate-contract path.
-3. Define rollback strategy.
-4. Call out data-loss or downtime risk.
-5. Recommend metrics and validation.
-
-Output sections:
-- Change Summary
-- Risks
-- Safe Sequence
-- Rollback
-- Validation
-EOF
-      ;;
-    incident-triage) cat <<'EOF'
-You are an incident commander assistant.
-
-When invoked:
-1. Summarize impact and blast radius.
-2. Build a hypothesis list.
-3. Propose immediate mitigations.
-4. Assign owners and next checks.
-5. Capture a draft incident timeline.
-
-Output sections:
-- Impact
-- Hypotheses
-- Mitigations
-- Owners
-- Timeline
-- Follow-up
-EOF
-      ;;
-    performance-review) cat <<'EOF'
-You are a performance review specialist.
-
-When invoked:
-1. Identify the user-visible bottleneck.
-2. Ask for or infer measurements.
-3. Locate likely hotspots.
-4. Recommend low-risk improvements first.
-5. Explain tradeoffs.
-
-Output sections:
-- Bottleneck
-- Evidence
-- Hotspots
-- Improvements
-- Tradeoffs
-EOF
-      ;;
-    ui-review) cat <<'EOF'
-You are a UI reviewer.
-
-Review for:
-- Visual hierarchy
-- Consistency
-- States and transitions
-- Error handling
-- Empty/loading states
-- Accessibility basics
-
-Output sections:
-- Summary
-- Findings
-- Suggested Improvements
-EOF
-      ;;
-    accessibility-review) cat <<'EOF'
-You are an accessibility reviewer.
-
-Review for:
-- Semantic structure
-- Keyboard access
-- Focus order
-- Labels and names
-- Contrast
-- Screen reader compatibility
-
-Output sections:
-- Findings
-- Severity
-- Fixes
-- Quick Wins
-EOF
-      ;;
-    ux-copy) cat <<'EOF'
-You are a UX copywriter.
-
-When invoked:
-1. Identify user intent and moment.
-2. Rewrite copy for clarity and confidence.
-3. Keep it concise and actionable.
-4. Offer 2-3 tone variants when helpful.
-
-Output sections:
-- Current Problem
-- Revised Copy
-- Alternatives
-EOF
-      ;;
-    requirements-refiner) cat <<'EOF'
-You are a product requirements refiner.
-
-When invoked:
-1. Turn vague requests into a crisp problem statement.
-2. Identify constraints and assumptions.
-3. Draft acceptance criteria.
-4. Surface open questions and risks.
-
-Output sections:
-- Problem Statement
-- Constraints
-- Acceptance Criteria
-- Open Questions
-- Risks
-EOF
-      ;;
-    pr-review) cat <<'EOF'
-You are a pull request reviewer.
-
-When invoked:
-1. Summarize what changed.
-2. Identify risky areas.
-3. Check clarity, tests, and migration impact.
-4. Recommend merge blockers vs nits.
-
-Output sections:
-- Summary
-- Blockers
-- Risks
-- Nits
-- Merge Readiness
-EOF
-      ;;
-    changelog) cat <<'EOF'
-You are a changelog writer.
-
-When invoked:
-1. Group changes by user impact.
-2. Write concise entries.
-3. Separate user-facing notes from internal notes.
-4. Call out migrations, deprecations, and breaking changes.
-
-Output sections:
-- User-Facing
-- Developer Notes
-- Breaking Changes
-- Upgrade Notes
-EOF
-      ;;
-    *) cat <<'EOF'
-You are a specialized engineering assistant.
-
-Output sections:
-- Summary
-- Findings
-- Recommendations
-EOF
-      ;;
-  esac
-}
-
-support_template() {
   local skill="$1"
-  case "$skill" in
-    planner) cat <<'EOF'
-# Planning Template
-
-## Objective
-## Assumptions
-## Milestones
-## Risks
-## Checkpoints
-EOF
-      ;;
-    architect) cat <<'EOF'
-# Architecture Template
-
-## Context
-## Components
-## Data Flow
-## Tradeoffs
-## Rollout
-EOF
-      ;;
-    code-review) cat <<'EOF'
-# Review Template
-
-## Summary
-## Findings
-## Severity
-## Fixes
-EOF
-      ;;
-    debug) cat <<'EOF'
-# Debug Template
-
-## Symptoms
-## Hypotheses
-## Validation
-## Root Cause
-## Fix
-EOF
-      ;;
-    *) cat <<'EOF'
-# Template
-
-## Summary
-## Details
-## Output
-EOF
-      ;;
-  esac
+  local file="$BUNDLED_SKILLS_DIR/$skill/SKILL.md"
+  if [[ -f "$file" ]]; then
+    grep '^description: ' "$file" | head -1 | sed 's/^description: //'
+  else
+    echo "General-purpose engineering skill."
+  fi
 }
+
 
 skill_dir_exists() {
   local dir="$1"
@@ -646,45 +209,35 @@ skill_dir_exists() {
 write_skill() {
   local root="$1"
   local skill="$2"
-  local dir="$root/$skill"
-  local desc body
+  local src="$BUNDLED_SKILLS_DIR/$skill"
+  local dst="$root/$skill"
 
-  desc="$(skill_description "$skill")"
-  body="$(skill_body "$skill")"
+  if [[ ! -d "$src" ]]; then
+    err "Bundled skill not found: $skill (expected at $src)"
+  fi
+  if [[ ! -f "$src/SKILL.md" ]]; then
+    err "Bundled skill missing SKILL.md: $src/SKILL.md"
+  fi
 
-  if skill_dir_exists "$dir" && [[ "$FORCE" -ne 1 ]]; then
-    log "skip   $dir (exists, use --force to overwrite)"
+  if [[ -d "$dst" && "$FORCE" -ne 1 ]]; then
+    log "skip   $dst (exists, use --force to overwrite)"
     return 0
   fi
 
-  run_cmd mkdir -p "$dir"
-
   if [[ "$DRY_RUN" -eq 1 ]]; then
-    log "[dry-run] write $dir/SKILL.md"
-  else
-    cat > "$dir/SKILL.md" <<EOF
----
-name: $skill
-description: $desc
----
-
-$body
-EOF
+    log "[dry-run] install $skill from $src"
+    return 0
   fi
 
+  run_cmd mkdir -p "$dst"
+  run_cmd cp "$src/SKILL.md" "$dst/SKILL.md"
+
   if [[ "$WITHOUT_SUPPORT_FILES" -ne 1 ]]; then
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-      log "[dry-run] write $dir/template.md"
-      log "[dry-run] mkdir -p $dir/examples"
-      log "[dry-run] write $dir/examples/example.txt"
-    else
-      cat > "$dir/template.md" <<EOF
-$(support_template "$skill")
-EOF
-      mkdir -p "$dir/examples"
-      cat > "$dir/examples/example.txt" <<EOF
-Example usage for skill: $skill
-EOF
+    if [[ -f "$src/template.md" ]]; then
+      run_cmd cp "$src/template.md" "$dst/template.md"
+    fi
+    if [[ -d "$src/examples" ]]; then
+      run_cmd cp -r "$src/examples" "$dst/examples"
     fi
   fi
 

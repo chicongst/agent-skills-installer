@@ -1,0 +1,136 @@
+# Example: /test-writer
+
+## User Input
+Write tests for this discount calculation function:
+
+```python
+def calculate_discount(price: float, user_tier: str, coupon_code: str | None = None) -> float:
+    """Returns final price after discounts."""
+    if price <= 0:
+        raise ValueError("Price must be positive")
+
+    discount = 0.0
+    if user_tier == "premium":
+        discount += 0.10
+    elif user_tier == "enterprise":
+        discount += 0.20
+
+    if coupon_code == "SAVE10":
+        discount += 0.10
+    elif coupon_code == "SAVE20":
+        discount += 0.20
+
+    discount = min(discount, 0.50)  # max 50% discount
+    return round(price * (1 - discount), 2)
+```
+
+## Skill Output
+
+# Test Plan: calculate_discount()
+
+## Test Strategy
+- **Type**: Unit tests
+- **Framework**: pytest
+- **Key behaviors**: Tier discounts, coupon discounts, discount cap, input validation
+- **Out of scope**: Database, network calls (pure function — none needed)
+
+## Test Cases
+
+### Critical Path (happy path)
+| Test | Input | Expected |
+|------|-------|----------|
+| No discount (free tier) | price=100, tier="free" | 100.00 |
+| Premium discount | price=100, tier="premium" | 90.00 |
+| Enterprise discount | price=100, tier="enterprise" | 80.00 |
+| Coupon SAVE10 only | price=100, tier="free", coupon="SAVE10" | 90.00 |
+| Combined tier + coupon | price=100, tier="premium", coupon="SAVE10" | 80.00 |
+
+### Edge Cases
+| Test | Input | Expected | Why It Matters |
+|------|-------|----------|---------------|
+| Discount cap enforced | price=100, tier="enterprise", coupon="SAVE20" | 50.00 | 40% would be 60%, capped at 50% |
+| Unknown coupon ignored | price=100, coupon="INVALID" | 100.00 | Invalid coupons must not give discount |
+| Unknown tier gets no discount | price=100, tier="vip" | 100.00 | New tiers shouldn't silently get discounts |
+| Decimal price rounds correctly | price=99.99, tier="premium" | 89.99 | Floating point precision |
+| Minimum valid price | price=0.01, tier="free" | 0.01 | Just above zero boundary |
+
+### Error Handling
+| Test | Input | Expected Error |
+|------|-------|---------------|
+| Zero price | price=0 | ValueError("Price must be positive") |
+| Negative price | price=-10 | ValueError("Price must be positive") |
+
+## Test Code
+
+```python
+import pytest
+from pricing import calculate_discount
+
+
+class TestCalculateDiscountTiers:
+    def test_free_tier_no_discount(self):
+        assert calculate_discount(100.0, "free") == 100.00
+
+    def test_premium_tier_applies_10_percent(self):
+        assert calculate_discount(100.0, "premium") == 90.00
+
+    def test_enterprise_tier_applies_20_percent(self):
+        assert calculate_discount(100.0, "enterprise") == 80.00
+
+    def test_unknown_tier_gets_no_discount(self):
+        # Important: new tiers added later should not silently get discounts
+        assert calculate_discount(100.0, "vip_special") == 100.00
+
+
+class TestCalculateDiscountCoupons:
+    def test_save10_coupon_applies_10_percent(self):
+        assert calculate_discount(100.0, "free", coupon_code="SAVE10") == 90.00
+
+    def test_save20_coupon_applies_20_percent(self):
+        assert calculate_discount(100.0, "free", coupon_code="SAVE20") == 80.00
+
+    def test_invalid_coupon_gives_no_discount(self):
+        assert calculate_discount(100.0, "free", coupon_code="FAKE50") == 100.00
+
+    def test_none_coupon_gives_no_discount(self):
+        assert calculate_discount(100.0, "free", coupon_code=None) == 100.00
+
+
+class TestCalculateDiscountCombined:
+    def test_premium_plus_save10_stacks(self):
+        # 10% + 10% = 20% discount
+        assert calculate_discount(100.0, "premium", coupon_code="SAVE10") == 80.00
+
+    def test_enterprise_plus_save20_capped_at_50_percent(self):
+        # 20% + 20% = 40% → would be 60, but capped at 50%
+        assert calculate_discount(100.0, "enterprise", coupon_code="SAVE20") == 50.00
+
+    def test_cap_enforced_not_exceeded(self):
+        # Verify cap is exactly 50%, not 49% or 51%
+        result = calculate_discount(200.0, "enterprise", coupon_code="SAVE20")
+        assert result == 100.00  # exactly 50% of 200
+
+
+class TestCalculateDiscountEdgeCases:
+    def test_decimal_price_rounds_correctly(self):
+        assert calculate_discount(99.99, "premium") == 89.99
+
+    def test_minimum_valid_price(self):
+        assert calculate_discount(0.01, "free") == 0.01
+
+    def test_large_price(self):
+        assert calculate_discount(10_000.0, "enterprise") == 8_000.00
+
+
+class TestCalculateDiscountValidation:
+    def test_zero_price_raises_value_error(self):
+        with pytest.raises(ValueError, match="Price must be positive"):
+            calculate_discount(0, "free")
+
+    def test_negative_price_raises_value_error(self):
+        with pytest.raises(ValueError, match="Price must be positive"):
+            calculate_discount(-50.0, "premium")
+
+## Remaining Gaps
+- No test for concurrent calls (thread safety — likely not needed for pure function)
+- No property-based tests for floating point edge cases (consider adding with Hypothesis)

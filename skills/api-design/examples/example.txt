@@ -1,0 +1,165 @@
+# Example: /api-design
+
+## User Input
+Design a REST API for a task management system. Users can create projects,
+add tasks to projects, assign tasks to team members, and mark tasks done.
+Need to support filtering tasks by status and assignee. Mobile and web clients.
+
+## Skill Output
+
+# API Design: Task Management
+
+## Overview
+CRUD API for projects and tasks with assignment and filtering support.
+Primary consumers: React web app, React Native mobile app.
+
+## Base URL & Auth
+- Base: `https://api.example.com/v1`
+- Auth: Bearer token (JWT), required on all endpoints
+- Versioning: URL prefix (`/v1`)
+
+## Resources
+
+### Projects
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /projects | List user's projects |
+| POST | /projects | Create project |
+| GET | /projects/{id} | Get project |
+| PATCH | /projects/{id} | Update project |
+| DELETE | /projects/{id} | Archive project |
+| GET | /projects/{id}/tasks | List project tasks (filterable) |
+
+### Tasks
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | /projects/{project_id}/tasks | Create task |
+| GET | /tasks/{id} | Get task |
+| PATCH | /tasks/{id} | Update task (status, assignee, etc.) |
+| DELETE | /tasks/{id} | Delete task |
+
+### Members (project membership)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /projects/{id}/members | List project members |
+| POST | /projects/{id}/members | Add member |
+| DELETE | /projects/{id}/members/{user_id} | Remove member |
+
+## Request / Response Examples
+
+### Create Task
+```http
+POST /v1/projects/proj_abc123/tasks
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "title": "Implement login page",
+  "description": "Use the Figma designs from the shared drive",
+  "assignee_id": "usr_xyz789",
+  "due_date": "2024-02-15",
+  "priority": "high"
+}
+```
+
+**Response 201:**
+```json
+{
+  "data": {
+    "id": "task_def456",
+    "title": "Implement login page",
+    "description": "Use the Figma designs from the shared drive",
+    "status": "todo",
+    "priority": "high",
+    "assignee": {
+      "id": "usr_xyz789",
+      "name": "Jane Doe",
+      "avatar_url": "https://cdn.example.com/avatars/jane.jpg"
+    },
+    "project_id": "proj_abc123",
+    "due_date": "2024-02-15",
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:30:00Z"
+  }
+}
+```
+
+### List Tasks (with filters)
+```http
+GET /v1/projects/proj_abc123/tasks?status=in_progress&assignee_id=usr_xyz789&page=1&per_page=20
+Authorization: Bearer {token}
+```
+
+**Response 200:**
+```json
+{
+  "data": [
+    { "id": "task_def456", "title": "...", "status": "in_progress", ... }
+  ],
+  "meta": {
+    "total": 42,
+    "page": 1,
+    "per_page": 20,
+    "next_cursor": "eyJpZCI6InRhc2tfZ2hpNzg5In0="
+  }
+}
+```
+
+### Update Task Status
+```http
+PATCH /v1/tasks/task_def456
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "status": "done"
+}
+```
+**Response 200:** Updated task object.
+
+## Field Definitions
+
+**Task status values**: `todo` | `in_progress` | `in_review` | `done` | `cancelled`
+**Task priority values**: `low` | `medium` | `high` | `urgent`
+
+## Error Handling
+
+Standard error format:
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Invalid request",
+    "details": [
+      { "field": "due_date", "message": "Must be a future date" },
+      { "field": "assignee_id", "message": "User is not a project member" }
+    ]
+  },
+  "meta": { "request_id": "req_abc123" }
+}
+```
+
+| Status | Code | When |
+|--------|------|------|
+| 400 | `VALIDATION_ERROR` | Invalid field values |
+| 403 | `FORBIDDEN` | Not a project member |
+| 404 | `NOT_FOUND` | Task/project doesn't exist |
+| 409 | `CONFLICT` | Duplicate task title within project |
+
+## Design Decisions
+
+**Tasks nested under projects for creation, top-level for reads**
+`POST /projects/{id}/tasks` enforces project membership on create.
+`GET /tasks/{id}` allows direct task lookup without knowing the project — needed
+by mobile notification deep-links.
+
+**PATCH not PUT for updates**
+Tasks have many optional fields. PATCH allows partial updates (e.g., just status)
+without requiring the client to know/send the full task object.
+
+**Cursor pagination over offset**
+Tasks lists can grow large and tasks are frequently inserted — offset pagination
+produces inconsistent pages. Cursor pagination is stable.

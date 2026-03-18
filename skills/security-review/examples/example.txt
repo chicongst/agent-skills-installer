@@ -1,0 +1,126 @@
+# Example: /security-review
+
+## User Input (code to review)
+
+```javascript
+// Express.js login endpoint
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  const query = `SELECT * FROM users WHERE username = '${username}'`;
+  const user = await db.query(query);
+
+  if (user && user.password === password) {
+    const token = jwt.sign({ userId: user.id, role: user.role }, 'secret123');
+    res.json({ token, user });
+  } else {
+    res.status(401).json({ error: 'Invalid credentials' });
+  }
+});
+```
+
+## Skill Output
+
+# Security Review: POST /api/login
+
+## Threat Model
+- **Trust boundaries**: All request body fields (username, password) are untrusted
+- **Sensitive data**: Passwords, JWT tokens, user PII
+- **Attack surface**: Public unauthenticated endpoint — highest risk surface
+
+## Findings
+
+### 🔴 CRITICAL: SQL Injection
+**Location**: Line 4
+**CWE**: CWE-89 (SQL Injection)
+**Description**: `username` is interpolated directly into SQL string.
+**Exploit scenario**:
+```
+POST /api/login
+{"username": "admin'--", "password": "anything"}
+→ Executes: SELECT * FROM users WHERE username = 'admin'--'
+→ Returns admin user without password check
+```
+**Fix**:
+```javascript
+// Use parameterized query
+const user = await db.query(
+  'SELECT * FROM users WHERE username = $1',
+  [username]
+);
+```
+
+### 🔴 CRITICAL: Plaintext Password Comparison
+**Location**: Line 7
+**CWE**: CWE-256 (Plaintext Storage of Password)
+**Description**: `user.password === password` compares plaintext strings. Passwords
+must be stored as hashes (bcrypt/argon2), never in plaintext.
+**Exploit**: If DB is compromised, all user passwords are immediately exposed.
+**Fix**:
+```javascript
+const bcrypt = require('bcrypt');
+const isValid = await bcrypt.compare(password, user.password_hash);
+if (user && isValid) { ... }
+```
+
+### 🔴 CRITICAL: Hardcoded JWT Secret
+**Location**: Line 9
+**CWE**: CWE-798 (Hard-coded Credentials)
+**Description**: `'secret123'` is committed to source code. Anyone with repo access
+can forge valid JWTs for any user including admins.
+**Fix**:
+```javascript
+// Load from environment variable, fail fast if missing
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable required');
+const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, {
+  expiresIn: '24h'  // Always set expiration
+});
+```
+
+### 🔴 HIGH: Full User Object Returned in Response
+**Location**: Line 10
+**Description**: `res.json({ token, user })` returns the entire DB row including
+password hash, internal IDs, and any other fields.
+**Fix**:
+```javascript
+const { password_hash, ...safeUser } = user;
+res.json({ token, user: safeUser });
+// Better: explicitly whitelist fields
+res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+```
+
+### 🟡 MEDIUM: No Rate Limiting
+**Description**: Endpoint accepts unlimited login attempts — trivially brute-forced.
+**Fix**: Add rate limiting middleware:
+```javascript
+const rateLimit = require('express-rate-limit');
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+app.post('/api/login', loginLimiter, async (req, res) => { ... });
+```
+
+### 🟡 MEDIUM: JWT Has No Expiration
+**Location**: Line 9
+**Description**: Token never expires — stolen tokens are valid forever.
+**Fix**: Add `expiresIn: '24h'` to jwt.sign options (shown above).
+
+### 🟢 LOW: Timing Attack on Username Lookup
+**Description**: Failed username lookup returns faster than failed password check,
+allowing username enumeration via response time.
+**Fix**: Always run bcrypt.compare even when user not found (dummy hash).
+
+## Hardening Checklist
+- [ ] Parameterized queries — eliminates SQL injection
+- [ ] bcrypt for password storage and comparison
+- [ ] JWT_SECRET from environment variable, minimum 32 chars
+- [ ] JWT expiration set (24h access token)
+- [ ] Rate limiting on login (10 attempts / 15 min)
+- [ ] Only return whitelisted user fields in response
+- [ ] Add login attempt logging for security monitoring
+
+## Summary
+- **Critical**: 4 — Must fix before any production deployment
+- **Medium**: 2 — Fix before public launch
+- **Low**: 1 — Fix in next security hardening cycle
+
+This endpoint in its current form would be compromised within minutes of going live.

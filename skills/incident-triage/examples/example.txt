@@ -1,0 +1,109 @@
+# Example: /incident-triage
+
+## User Input
+Our payment processing is failing. Orders are being placed but payments aren't
+going through. Started about 20 minutes ago. Error rate on /api/checkout is at
+45%. Some orders showing "payment pending" forever. Black Friday campaign started
+2 hours ago — traffic is 4x normal. No recent deploys.
+
+## Skill Output
+
+# Incident Report: Payment Processing Failures
+
+## Status: INVESTIGATING
+**Severity**: SEV-1 — Revenue-critical, 45% checkout failure rate
+**Started**: ~20 minutes ago (approx 14:10 UTC)
+**Duration**: 20 minutes ongoing
+**Commander**: [Assign immediately]
+
+## Impact
+- **Users affected**: ~45% of checkout attempts failing
+- **Revenue impact**: ~$8,400/minute at 4x traffic (est. based on normal $2,100/min)
+- **Services affected**: /api/checkout, payment-service, order-service
+- **Blast radius**: Growing — 4x traffic means more users hitting failures
+
+## Immediate Actions (Do Now)
+
+1. **Check payment gateway status page** — Stripe/PayPal/etc. has a public status page.
+   If they're down, that's the root cause. ETA: 2 minutes.
+
+2. **Check payment-service error logs**:
+   ```bash
+   kubectl logs -l app=payment-service --since=30m | grep -E "ERROR|TIMEOUT|refused"
+   ```
+
+3. **Check DB connection pool**:
+   ```bash
+   # High traffic can exhaust connection pools silently
+   kubectl exec -it payment-service-xxx -- env | grep DB_POOL
+   # Check pg_stat_activity for connection count
+   psql -c "SELECT count(*) FROM pg_stat_activity WHERE datname = 'payments';"
+   ```
+
+4. **Check payment-service health endpoint**:
+   ```bash
+   curl https://internal.api/payment-service/health
+   ```
+
+## Timeline
+
+| Time (UTC) | Event |
+|------------|-------|
+| 12:00 | Black Friday campaign launched, traffic ramp begins |
+| 14:10 | First payment failure alerts fire (error rate > 5%) |
+| 14:20 | Error rate climbs to 45%, SEV-1 declared |
+| 14:30 | Investigation started (this report) |
+
+## Hypotheses
+
+| # | Hypothesis | Probability | Assignee | Validation |
+|---|-----------|-------------|----------|------------|
+| 1 | Payment gateway (Stripe) is experiencing issues | **High** | Dev A | Check stripe.com/status NOW |
+| 2 | DB connection pool exhausted under 4x load | **High** | Dev B | Check pg_stat_activity connection count |
+| 3 | payment-service OOM-killed or crashing under load | **High** | Dev C | `kubectl get pods -l app=payment-service` |
+| 4 | Rate limit hit on payment gateway API key | **Medium** | Dev A | Check Stripe dashboard for 429 errors |
+| 5 | Redis session store overwhelmed (checkout sessions expiring) | **Low** | Dev B | Check Redis memory and eviction metrics |
+
+## Mitigations Ready to Deploy
+
+If **Hypothesis 1** (gateway down):
+- Enable "retry later" mode: accept orders, queue payment for retry when gateway recovers
+- ETA to enable: 5 minutes (feature flag exists: `PAYMENT_RETRY_MODE=true`)
+
+If **Hypothesis 2** (DB pool exhausted):
+- Increase pool size: `DB_POOL_SIZE=50` (current: 20) — redeploy payment-service
+- ETA: 3 minutes
+
+If **Hypothesis 3** (pod crashing):
+- Scale up replicas: `kubectl scale deployment payment-service --replicas=10`
+- ETA: 2 minutes
+
+## Communication
+
+**14:30 UTC — Status page update**:
+> We are currently investigating payment processing delays. Some checkout attempts may
+> fail. Our team is actively working on a fix. We apologize for the inconvenience.
+
+**14:30 UTC — Internal Slack #incidents**:
+> SEV-1 ACTIVE: 45% payment failure rate. Commander: [Name]. War room: [link].
+> Dev A: Check Stripe status. Dev B: Check DB pool. Dev C: Check pod health.
+> Next update in 15 minutes.
+
+## Next Update: 14:45 UTC
+
+---
+
+## [UPDATE — 14:38 UTC]
+
+**Root cause identified**: Stripe API returning 429 (rate limit) for all requests.
+4x traffic exceeded our Stripe account's API rate limit (1,000 req/min).
+
+**Mitigation applied**:
+1. Enabled `PAYMENT_RETRY_MODE=true` — orders queue for retry, users see "processing"
+2. Contacted Stripe to increase rate limit (ETA: 30-60 min)
+3. Added request queuing in payment-service to smooth out spikes
+
+**Error rate**: 45% → 8% (dropping as retry queue processes)
+**ETA to full recovery**: 20-30 minutes
+
+**Next update**: 14:55 UTC or when error rate reaches 0%

@@ -1,0 +1,142 @@
+# Example: /performance-review
+
+## User Input
+Our product search endpoint is slow. GET /api/products/search?q=shoes&category=footwear
+is taking 3-8 seconds. This is our most-used endpoint (~50k requests/hour). Currently
+it queries a PostgreSQL table with 2 million product rows. Here's the query:
+
+```sql
+SELECT p.*, c.name as category_name, AVG(r.rating) as avg_rating
+FROM products p
+LEFT JOIN categories c ON p.category_id = c.id
+LEFT JOIN reviews r ON r.product_id = p.id
+WHERE p.active = true
+  AND (p.name ILIKE '%shoes%' OR p.description ILIKE '%shoes%')
+  AND c.slug = 'footwear'
+GROUP BY p.id, c.name
+ORDER BY avg_rating DESC NULLS LAST
+LIMIT 20;
+```
+
+## Skill Output
+
+# Performance Review: GET /api/products/search
+
+## Current State
+- **p99 latency**: 3-8 seconds (varies by search term)
+- **Traffic**: ~50k req/hour (~14 req/second)
+- **SLA target**: < 500ms at p99
+- **Status**: Violating SLA by 6-16x
+
+## Query Analysis
+
+```sql
+EXPLAIN ANALYZE SELECT p.*, c.name as category_name, AVG(r.rating) as avg_rating
+FROM products p
+LEFT JOIN categories c ON p.category_id = c.id
+LEFT JOIN reviews r ON r.product_id = p.id
+WHERE p.active = true
+  AND (p.name ILIKE '%shoes%' OR p.description ILIKE '%shoes%')
+  AND c.slug = 'footwear'
+GROUP BY p.id, c.name
+ORDER BY avg_rating DESC NULLS LAST
+LIMIT 20;
+```
+
+**Expected EXPLAIN output problems**:
+- `Seq Scan on products` (cost ~850ms) — ILIKE '%shoes%' with leading wildcard cannot use B-tree index
+- `Seq Scan on reviews` for AVG calculation — recomputed per-query for every matching product
+- `Sort` on avg_rating — sort on computed aggregate, no index possible
+
+## Bottleneck Analysis
+
+| Phase | Estimated Time | % of Total | Root Cause |
+|-------|---------------|-----------|------------|
+| products ILIKE scan | ~2,500ms | 60% | Leading wildcard disables index — full table scan |
+| reviews AVG join | ~1,200ms | 30% | Recomputes average for all reviews on every search |
+| Sort + limit | ~300ms | 7% | Sort on computed column |
+
+**Primary bottleneck**: Full table scan due to `ILIKE '%shoes%'` (leading wildcard)
+
+## Recommendations
+
+### 1. Full-text search index — Impact: HIGH, Effort: LOW
+**Expected improvement**: 2,500ms → 50ms for text search phase
+
+```sql
+-- Add GIN index for full-text search (one-time, ~5 min to build)
+ALTER TABLE products ADD COLUMN search_vector tsvector
+    GENERATED ALWAYS AS (
+        to_tsvector('english', coalesce(name, '') || ' ' || coalesce(description, ''))
+    ) STORED;
+
+CREATE INDEX idx_products_search ON products USING GIN(search_vector);
+
+-- Updated query uses index:
+WHERE p.active = true
+  AND p.search_vector @@ plainto_tsquery('english', 'shoes')
+  AND c.slug = 'footwear'
+```
+
+This replaces `ILIKE '%shoes%' OR ILIKE '%shoes%'` with an indexed full-text search.
+
+### 2. Materialize average rating — Impact: HIGH, Effort: MEDIUM
+**Expected improvement**: 1,200ms → 5ms for rating join
+
+Instead of computing AVG(reviews.rating) per-query, store it on the product:
+
+```sql
+-- Add denormalized column
+ALTER TABLE products ADD COLUMN avg_rating DECIMAL(3,2) DEFAULT NULL;
+ALTER TABLE products ADD COLUMN review_count INTEGER DEFAULT 0;
+
+-- Backfill
+UPDATE products p SET
+    avg_rating = (SELECT AVG(rating) FROM reviews WHERE product_id = p.id),
+    review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = p.id);
+
+-- Keep updated via trigger or background job on new reviews
+-- Updated query: ORDER BY p.avg_rating DESC NULLS LAST (no JOIN to reviews)
+```
+
+### 3. Add composite index for category + active filter — Impact: MEDIUM, Effort: LOW
+```sql
+CREATE INDEX idx_products_category_active
+    ON products(category_id, active)
+    WHERE active = true;
+```
+
+## Projected Performance After Fixes
+
+| Fix Applied | Estimated p99 |
+|------------|---------------|
+| Current | 3,000-8,000ms |
+| + Full-text index | 400-800ms |
+| + Materialized rating | 80-150ms |
+| + Composite index | 40-80ms |
+
+**Target (< 500ms) achieved after Fix #1 alone.**
+
+## Not Recommended
+**Elasticsearch migration** — Would achieve similar results but adds significant
+operational complexity. PostgreSQL full-text search is sufficient for 2M products.
+Revisit if product catalog exceeds 20M rows or search requirements become more complex
+(faceted search, synonyms, typo tolerance).
+
+## Verification Plan
+```sql
+-- Baseline before changes
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT ... (original query);
+
+-- After each fix, run same EXPLAIN and compare:
+-- - Seq Scan → Index Scan (fix 1 success indicator)
+-- - reviews join removed (fix 2 success indicator)
+-- - Execution time in actual timing row
+```
+
+- [ ] Baseline timing captured on staging with production data copy
+- [ ] Fix 1 (full-text index) applied and tested — target < 500ms
+- [ ] Fix 2 (materialized rating) applied — target < 100ms
+- [ ] Load test at 14 req/sec — confirm p99 holds under sustained traffic
+- [ ] Performance regression test added to CI (query must complete < 500ms)

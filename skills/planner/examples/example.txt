@@ -1,0 +1,80 @@
+# Example: /planner
+
+## User Input
+We need to migrate our monolithic authentication system to a dedicated Auth Service.
+Currently auth logic is spread across UserController, SessionManager, and 3 middleware files.
+We use JWT but tokens are validated inconsistently. Target: standalone auth-service with
+OAuth2 support, token refresh, and zero downtime migration. Team: 3 backend engineers,
+2 weeks available.
+
+## Skill Output
+
+# Execution Plan: Auth Service Migration
+
+## Objective
+Extract authentication logic from the monolith into a standalone auth-service with OAuth2
+support and token refresh, while maintaining zero downtime for ~50k daily active users.
+Migration must complete within 2 weeks with a 3-person backend team.
+
+## Assumptions & Constraints
+| Type | Statement | Risk If Wrong |
+|------|-----------|---------------|
+| Assumption | Current JWT secret can be shared during transition | Must reissue all tokens on cutover |
+| Assumption | No mobile clients with hardcoded token validation | Requires coordinated mobile release |
+| Constraint | Zero downtime — no maintenance window available | Increases migration complexity |
+| Constraint | 2-week deadline | Scope must be ruthlessly prioritized |
+
+## Phase Breakdown
+
+### Phase 1: Audit & Spike (Days 1-2)
+**Goal**: Understand current auth surface area and validate the migration approach
+**Tasks**:
+1. [ ] Audit all auth touchpoints — list every endpoint that validates tokens — Owner: Dev A
+2. [ ] Document current token format and validation rules — Owner: Dev A
+3. [ ] Spike: Deploy auth-service skeleton with dual-write capability — Owner: Dev B
+4. [ ] Identify all places SessionManager is imported — Owner: Dev C
+**Exit criteria**: Complete map of auth surface area; spike deployed to staging
+
+### Phase 2: Build Auth Service (Days 3-7)
+**Goal**: Feature-complete auth-service running alongside monolith
+**Tasks**:
+1. [ ] Implement token issuance endpoint (POST /auth/token) — Owner: Dev B — Depends on: Phase 1
+2. [ ] Implement token validation endpoint (POST /auth/validate) — Owner: Dev B
+3. [ ] Implement token refresh (POST /auth/refresh) — Owner: Dev C
+4. [ ] Add OAuth2 provider integration (Google, GitHub) — Owner: Dev A — Depends on: token issuance
+5. [ ] Write integration tests for all auth flows — Owner: Dev C
+6. [ ] Add auth-service to staging with monolith calling it — Owner: Dev B
+**Exit criteria**: All existing auth flows pass through auth-service on staging
+
+### Phase 3: Traffic Migration (Days 8-11)
+**Goal**: Gradually shift production traffic to auth-service
+**Tasks**:
+1. [ ] Deploy auth-service to production (dark mode) — Owner: Dev B — Depends on: Phase 2
+2. [ ] Enable dual-write: monolith issues tokens AND auth-service issues tokens — Owner: Dev A
+3. [ ] Route 10% of validation requests to auth-service, monitor error rates — Owner: Dev A
+4. [ ] Ramp to 50% → 100% over 2 days if metrics are healthy — Owner: Dev A
+**Exit criteria**: 100% traffic through auth-service, monolith auth code is read-only
+
+### Phase 4: Cleanup (Days 12-14)
+**Goal**: Remove dead code, update docs
+**Tasks**:
+1. [ ] Delete UserController auth methods — Owner: Dev C — Depends on: Phase 3
+2. [ ] Remove SessionManager — Owner: Dev C
+3. [ ] Remove auth middleware from monolith — Owner: Dev A
+4. [ ] Update internal docs and runbooks — Owner: Dev A
+**Exit criteria**: Auth code removed from monolith; auth-service is sole auth system
+
+## Critical Path
+[Audit] → [Build auth-service] → [Integration tests] → [Dual-write] → [Traffic ramp] → [Cleanup]
+
+## Risk Register
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Token format incompatibility found in audit | Medium | High | Add token translation layer in Phase 2 |
+| Mobile clients hardcode validation | Low | High | Check analytics for old app versions in Phase 1 |
+| Performance regression in auth-service | Medium | High | Load test in Phase 2 before any traffic migration |
+| OAuth provider API changes | Low | Medium | Use abstraction layer; test with real providers in staging |
+
+## Open Questions
+- Who manages the OAuth2 client credentials in production? — Blocks: Phase 2 Day 4
+- Do we need to support service-to-service auth (machine tokens)? — Blocks: Phase 2 scope

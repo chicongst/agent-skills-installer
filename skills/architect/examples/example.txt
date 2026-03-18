@@ -1,0 +1,92 @@
+# Example: /architect
+
+## User Input
+We're building a real-time notification system. Users need to receive notifications
+via web push, email, and in-app. We expect 5M users, peak 500k notifications/minute
+during marketing campaigns. Currently we have a monolith (Node.js + PostgreSQL).
+Need to design this as a new service.
+
+## Skill Output
+
+# Architecture Design: Notification Service
+
+## Problem Statement
+Build a notification delivery system supporting web push, email, and in-app channels
+for 5M users at peak 500k notifications/minute. Non-goals: SMS support (v2), user
+preference management UI (separate service), notification analytics (separate service).
+
+## Architecture Overview
+**Pattern**: Event-driven microservice
+**Communication**: Async (internal queue) + Sync REST (inbound API)
+**Data Strategy**: DB per service (notifications DB) + Redis for delivery state
+
+## Component Design
+
+### Notification API (Inbound)
+- **Responsibility**: Accept notification requests, validate, enqueue
+- **APIs exposed**: POST /notifications (single), POST /notifications/batch
+- **Scaling**: Horizontal, stateless — 3-10 replicas behind load balancer
+- **Rate limiting**: Per-caller API key, 10k req/min default
+
+### Notification Queue (Kafka)
+- **Responsibility**: Durable buffer between intake and delivery
+- **Topics**: notifications.web-push, notifications.email, notifications.in-app
+- **Retention**: 24h — allows retry without data loss
+- **Scaling**: Partition per channel; increase partitions for campaign peaks
+
+### Channel Workers (per channel)
+- **Responsibility**: Consume queue, deliver via channel-specific provider
+- **Web Push Worker**: Uses web-push library, handles VAPID keys
+- **Email Worker**: Sends via SendGrid, handles bounce/unsubscribe
+- **In-App Worker**: Writes to notifications table, real-time via WebSocket
+- **Scaling**: Independent — email may need 50 workers, push 20, in-app 10
+
+### Delivery State Store (Redis)
+- **Responsibility**: Track delivery status, support idempotency
+- **TTL**: 48h per notification record
+- **Schema**: notification_id → { status, attempts, last_error, delivered_at }
+
+### Notifications DB (PostgreSQL)
+- **Responsibility**: Persistent in-app notification history per user
+- **Data owned**: in-app notification records, read/unread state
+
+## Data Flow
+```
+Caller → POST /notifications → Notification API → Validate & Enqueue
+                                                        ↓
+                                                   Kafka Topics
+                                          ┌──────────────────────────┐
+                                          ↓             ↓            ↓
+                                    Web Push       Email         In-App
+                                    Worker         Worker        Worker
+                                          ↓             ↓            ↓
+                                    Push Provider  SendGrid    DB + WebSocket
+                                          ↓
+                                    Redis (delivery state update)
+```
+
+## Failure Modes
+| Failure | Impact | Mitigation | Recovery |
+|---------|--------|------------|----------|
+| Kafka down | No delivery (queued in API memory briefly) | Kafka cluster, 3 brokers | Auto-resume when Kafka recovers |
+| SendGrid down | Email delivery fails | Retry with backoff (5 attempts), dead-letter queue | Manual replay from dead-letter |
+| Worker crash mid-delivery | Duplicate delivery risk | Idempotency key checked against Redis before send | Redis TTL prevents infinite dedup |
+| DB down | In-app notifications not stored | WebSocket delivery still works; DB write retried | Backfill from Kafka on recovery |
+
+## Tradeoffs
+| Decision | Benefit | Cost | Alternative |
+|----------|---------|------|-------------|
+| Kafka over SQS | Replay capability, multi-consumer | Ops complexity | SQS: simpler but no replay |
+| Separate worker per channel | Independent scaling, fault isolation | More services to operate | Single worker: simpler but coupled |
+| Redis for delivery state | Fast idempotency checks | Another infra dependency | DB-only: slower, table lock risk |
+
+## Rollout Strategy
+1. Phase 1: Deploy API + Kafka + in-app worker only. Migrate in-app notifications from monolith.
+2. Phase 2: Add email worker. Cut over email delivery.
+3. Phase 3: Add web-push worker. Decommission monolith notification code.
+4. Rollback: Monolith notification code stays live until Phase 3 — any phase can roll back by re-enabling monolith flag.
+
+## Observability
+- **Metrics**: enqueue_rate, delivery_rate per channel, delivery_latency p99, dlq_depth
+- **Alerts**: dlq_depth > 1000 (delivery failures spiking), delivery_latency p99 > 30s
+- **Dashboards**: Real-time delivery funnel: enqueued → delivered → failed

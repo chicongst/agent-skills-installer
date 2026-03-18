@@ -1,0 +1,101 @@
+# Example: /code-review
+
+## User Input (code to review)
+
+```python
+def process_payment(user_id, amount, card_number):
+    user = db.query(f"SELECT * FROM users WHERE id = {user_id}")
+    if not user:
+        return {"error": "User not found"}
+
+    log.info(f"Processing payment for user {user_id}, card: {card_number}, amount: {amount}")
+
+    result = payment_gateway.charge(card_number, amount)
+
+    if result["status"] == "success":
+        db.query(f"UPDATE users SET balance = balance - {amount} WHERE id = {user_id}")
+        db.query(f"INSERT INTO transactions VALUES ({user_id}, {amount}, 'completed')")
+        return {"status": "success"}
+    else:
+        return {"error": result["message"]}
+```
+
+## Skill Output
+
+# Code Review: process_payment()
+
+## Summary
+This function has **two critical security vulnerabilities** (SQL injection + PII in logs)
+and a **critical data integrity bug** (non-atomic balance update). These must be fixed
+before this code can be merged. The logic is straightforward once the security issues
+are addressed.
+
+## Findings
+
+### 🔴 Security: SQL Injection (×3)
+**Location**: Lines 2, 10, 11
+**Problem**: User input interpolated directly into SQL strings. An attacker can pass
+`user_id = "1 OR 1=1"` to bypass user lookup, or `amount = "0; DROP TABLE users"`.
+**Risk**: Full database compromise — data exfiltration, deletion, or manipulation.
+**Fix**:
+```python
+# Use parameterized queries
+user = db.query("SELECT * FROM users WHERE id = %s", (user_id,))
+db.query("UPDATE users SET balance = balance - %s WHERE id = %s", (amount, user_id))
+db.query(
+    "INSERT INTO transactions (user_id, amount, status) VALUES (%s, %s, %s)",
+    (user_id, amount, "completed")
+)
+```
+
+### 🔴 Security: Card Number Logged in Plaintext
+**Location**: Line 4
+**Problem**: Full card number written to logs. Logs are typically stored in log
+aggregators (Datadog, Splunk) with broad access — this is a PCI-DSS violation.
+**Risk**: Credential exposure, regulatory fines, loss of payment processing ability.
+**Fix**:
+```python
+# Log only last 4 digits
+card_masked = f"****{card_number[-4:]}"
+log.info(f"Processing payment for user {user_id}, card: {card_masked}, amount: {amount}")
+```
+
+### 🔴 Data Integrity: Non-Atomic Balance Update
+**Location**: Lines 10-11
+**Problem**: Balance deduction and transaction insert are two separate queries with no
+transaction wrapper. If the process crashes between them, balance is deducted but no
+transaction record exists — money disappears.
+**Risk**: Data inconsistency, incorrect user balances, audit trail gaps.
+**Fix**:
+```python
+with db.transaction():
+    db.query("UPDATE users SET balance = balance - %s WHERE id = %s", (amount, user_id))
+    db.query(
+        "INSERT INTO transactions (user_id, amount, status) VALUES (%s, %s, %s)",
+        (user_id, amount, "completed")
+    )
+```
+
+### 🟡 Missing: Input Validation
+**Problem**: No validation of `amount` (could be negative, zero, or exceed balance).
+No validation that `card_number` is a valid format.
+**Fix**: Add validation before the DB query:
+```python
+if amount <= 0:
+    return {"error": "Amount must be positive"}
+if user["balance"] < amount:
+    return {"error": "Insufficient balance"}
+```
+
+### 🟡 Missing: Error Handling on DB Failure
+**Problem**: No try/except — a DB exception will propagate as an unhandled 500.
+**Fix**: Wrap in try/except and return a safe error response.
+
+## What's Good
+- Clean return structure with consistent dict format
+- Checking user existence before charging is correct
+- Delegating to payment_gateway is the right abstraction
+
+## Verdict
+**REQUEST CHANGES** — Two critical security issues and a data integrity bug must be
+fixed before merge. This should not go to production in current form.

@@ -1,0 +1,107 @@
+# Example: /ui-review
+
+## User Input
+Review the checkout flow we just built. It has 3 steps: cart review, shipping
+address, payment. Here are the main issues I'm worried about: form validation,
+mobile experience, and error states. (Reviewing screenshots + component code)
+
+## Skill Output
+
+# UI Review: Checkout Flow (3-step)
+
+## Summary
+The core layout and step progression work well. The primary concerns are missing
+error and loading states on the payment step, unclear validation feedback on the
+address form, and touch targets that are too small on mobile. These will cause
+user confusion and support tickets if shipped as-is.
+
+## Findings
+
+### 🔴 Usability: Payment form shows blank screen on submit failure
+**Location**: Step 3 — Payment, after clicking "Pay Now"
+**Problem**: When the payment fails (card declined, network error), the form resets
+to its initial state with no error message. User has no idea what happened.
+**Impact**: Users will click "Pay Now" multiple times, potentially charging their card
+multiple times, or abandon checkout entirely.
+**Suggestion**:
+```
+After failed payment:
+- Keep form filled (don't reset)
+- Show inline error banner at top of form:
+  "Payment declined: Your card has insufficient funds. Please use a different card."
+- Keep "Pay Now" button enabled so user can retry
+- For network errors: "Something went wrong. Your card was not charged. Please try again."
+```
+
+### 🔴 Missing State: No loading feedback after "Pay Now" click
+**Location**: Step 3 — Payment
+**Current**: Button becomes unresponsive, page appears frozen for 3-8 seconds
+**Problem**: Users think it's broken and click again → duplicate charge attempts
+**Suggestion**:
+```jsx
+// Disable button + show spinner during processing
+<Button disabled={isProcessing} onClick={handlePayment}>
+  {isProcessing ? (
+    <><Spinner size="sm" /> Processing payment...</>
+  ) : (
+    'Pay Now'
+  )}
+</Button>
+```
+
+### 🔴 Usability: Address form validates only on submit
+**Location**: Step 2 — Shipping Address
+**Problem**: User fills all 6 fields, clicks Continue, then sees 3 error messages.
+They don't know which field caused the error until they read each one.
+**Suggestion**: Validate on blur (when field loses focus):
+- Zip code: validate format immediately after user leaves the field
+- Email: show green checkmark when valid format detected
+- Phone: format as user types (555) 867-5309
+
+### 🟡 Missing State: Empty cart state
+**Location**: Step 1 — Cart Review
+**Current**: If user arrives with empty cart, shows blank white section
+**Suggestion**:
+```
+Empty state should show:
+- Illustration or icon (shopping bag)
+- "Your cart is empty"
+- "Continue Shopping" button → back to product catalog
+```
+
+### 🟡 Mobile: Touch targets too small
+**Location**: "Remove item" button in cart (Step 1), "Edit" links in order summary
+**Problem**: 20×20px tap targets on mobile — iOS Human Interface Guidelines require 44×44px
+**Impact**: Users frequently tap adjacent elements, causing rage taps and accidental actions
+**Suggestion**: Increase tap target to minimum 44×44px. Use padding to expand hit area
+without changing visual size:
+```css
+.remove-btn {
+  padding: 12px;  /* Expands tap area without changing icon size */
+  margin: -12px;  /* Compensate for added padding */
+}
+```
+
+### 🟡 Consistency: Two different "Continue" button styles
+**Location**: Step 1 and Step 2 footer
+**Problem**: Step 1 has a full-width blue "Continue to Shipping" button. Step 2 has
+a right-aligned smaller "Continue" button. Same action, different visual weight.
+**Suggestion**: Standardize to full-width primary button in footer across all steps.
+
+### 💭 Polish: Order summary doesn't persist across steps
+**Observation**: Cart summary is visible in Step 1, disappears in Steps 2-3.
+Users frequently want to verify their order while entering payment.
+**Suggestion**: Add collapsible "Order Summary" in right sidebar (desktop) or
+sticky footer accordion (mobile) visible on Steps 2 and 3.
+
+## What's Good
+- Step progress indicator (1/2/3) is clear and well-positioned
+- "Back" navigation between steps works correctly and preserves form data
+- Promo code field in cart is discoverable without being distracting
+- Form field labels are above inputs (not placeholder-only) — correct pattern
+
+## Priority Order
+1. Fix payment error state + loading indicator — revenue impact
+2. Inline form validation on address — reduces abandonment
+3. Touch target size on mobile — accessibility + usability
+4. Empty cart state — edge case but first impression for lost users
