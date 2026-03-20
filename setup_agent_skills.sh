@@ -129,6 +129,7 @@ test-writer
 security-review
 docs-writer
 api-design
+ui-design
 algorithm-review
 mastery
 EOF
@@ -149,6 +150,7 @@ sre-engineering
 performance-review
 pr-review
 changelog
+ui-design
 algorithm-review
 mastery
 EOF
@@ -169,6 +171,7 @@ sre-engineering
 performance-review
 pr-review
 changelog
+ui-design
 algorithm-review
 mastery
 EOF

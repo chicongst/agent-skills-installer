@@ -68,12 +68,15 @@ backend = core +
 - sre-engineering
 - performance-review
 
-frontend = core (same as core)
+frontend = core +
+
+- ui-design
 
 fullstack = backend +
 
 - pr-review
 - changelog
+- ui-design
 
 all = fullstack (all skills)
 
