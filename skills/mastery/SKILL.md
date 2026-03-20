@@ -25,6 +25,9 @@ Let context drive complexity. Never over-engineer a throwaway script. Never unde
 - Use structured concurrency where available (task groups, coroutine scope, context cancellation)
 - Handle cancellation and timeout explicitly — never let async work run unbounded
 - Prefer message passing over shared memory when crossing boundaries
+- **Locking strategy**: use **pessimistic lock** (SELECT FOR UPDATE) when contention is high and conflicts are frequent (inventory, seat booking); use **optimistic lock** (version/timestamp column, check-then-update) when conflicts are rare and throughput matters
+- **Oversell / ghost read prevention**: never rely on a read-then-write sequence without holding a lock — between the read and the write, another transaction can mutate the same row. Use atomic DB operations (`UPDATE stock SET qty = qty - 1 WHERE qty > 0`), pessimistic lock, or distributed lock (Redis SETNX) for critical sections
+- Phantom read: when a transaction re-queries a range and sees new rows inserted by another — use SERIALIZABLE isolation or range locks for strict consistency
 
 ## Error Handling
 
@@ -83,6 +86,22 @@ Let context drive complexity. Never over-engineer a throwaway script. Never unde
 - Use query parameterization — never concatenate user input into queries
 - Set query timeouts — a missing WHERE clause shouldn't take down the database
 - Profile queries in development — slow queries are bugs
+- Run **EXPLAIN / EXPLAIN ANALYZE** on any non-trivial query before shipping — look for Seq Scan on large tables, high row estimates, and nested loop on unindexed joins
+- Avoid full table scans on large tables: ensure WHERE clauses use indexed columns, avoid `LIKE '%prefix'`, functions on indexed columns (`WHERE YEAR(created_at) = 2024`), or implicit type casts that bypass indexes
+- Composite index order matters — put the highest-cardinality or equality column first, range column last
+
+## Message Queue & Async Messaging
+
+- Use async messaging to decouple producers from consumers — the producer fires and forgets; the consumer processes at its own pace
+- Choose the simplest solution that fits: in-process event emitter → DB-backed queue → managed cloud queue → dedicated broker. Don't over-provision infra for a problem a DB job table can solve
+- Make consumers **idempotent** — at-least-once delivery is the default guarantee; the same message may arrive more than once. Design handlers to be safe to re-run
+- Configure a **Dead Letter Queue (DLQ)** — messages that fail repeatedly must not silently disappear; route to DLQ for inspection and replay
+- Set **message TTL** and **queue max-length** — unbounded queues will exhaust broker memory under backpressure
+- Prefer **pull-based consumers** over push when load is unpredictable — consumers control their own processing rate
+- Use async messaging to: flatten traffic spikes, defer slow work (email, export, report generation), fan-out to multiple consumers, and enable independent scaling of workers
+- For **event streaming** (replay, audit trail, multi-consumer fan-out, high throughput): choose a persistent, replayable log-based system
+- For **task queues** (job dispatch, scheduled work, priority queues, RPC-style async): choose a broker with flexible routing and retry semantics
+- Do not use a queue as a database — queues are for transient work in flight, not durable state
 
 ## Performance
 
