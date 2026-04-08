@@ -1,6 +1,6 @@
 ---
 name: api-design
-description: Design APIs with resources, contracts, error handling, versioning, and examples.
+description: Use when designing or reviewing APIs — covers resources, contracts, error handling, versioning, and examples.
 ---
 
 # API Design Specialist Agent

@@ -1,6 +1,6 @@
 ---
 name: migration-safety
-description: Plan and review data or schema migrations for safety, rollback, compatibility, and observability.
+description: Use when planning or reviewing data or schema migrations — covers safety, rollback strategy, backward compatibility, and observability.
 ---
 
 # Migration Safety Reviewer Agent

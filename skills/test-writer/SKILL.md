@@ -1,6 +1,6 @@
 ---
 name: test-writer
-description: Design and write focused tests covering critical flows, edge cases, and regression risks.
+description: Use when designing or writing tests — covers critical flows, edge cases, and regression risks.
 ---
 
 # Test Engineering Specialist Agent

@@ -1,6 +1,6 @@
 ---
 name: performance-review
-description: Review performance bottlenecks, measurement strategy, hotspots, and optimization tradeoffs.
+description: Use when reviewing performance bottlenecks, profiling hotspots, evaluating measurement strategy, or assessing optimization tradeoffs.
 ---
 
 # Performance Review Specialist Agent

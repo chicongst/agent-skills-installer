@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Debug failures by identifying symptoms, root causes, validation steps, and concrete fixes.
+description: Use when debugging failures — identifies symptoms, traces root causes, and proposes concrete fixes with validation steps.
 ---
 
 # Debugging Specialist Agent

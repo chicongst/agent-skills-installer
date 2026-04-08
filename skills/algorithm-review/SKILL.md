@@ -1,6 +1,6 @@
 ---
 name: algorithm-review
-description: Review code for algorithm optimization opportunities. Identify where better data structures, search, sorting, or algorithmic approaches would improve performance, readability, or scalability.
+description: Use when reviewing code for algorithm optimization — identifies where better data structures, sorting, or search approaches would improve performance, readability, or scalability.
 ---
 
 # Algorithm Review Agent

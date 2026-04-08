@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Design system architecture, boundaries, data flow, tradeoffs, and rollout plans.
+description: Use when designing system architecture, planning new services, evaluating tradeoffs, or mapping data flow and rollout plans.
 ---
 
 # Software Architect Agent

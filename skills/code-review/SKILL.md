@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Review code for bugs, maintainability, correctness, edge cases, and architecture issues.
+description: Use when reviewing code for bugs, maintainability, correctness, edge cases, and architecture issues.
 ---
 
 # Code Reviewer Agent

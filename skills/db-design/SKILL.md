@@ -1,6 +1,6 @@
 ---
 name: db-design
-description: Design database schema, indexing, integrity constraints, query patterns, and migration strategy.
+description: Use when designing database schema, choosing indexes, defining constraints, planning query patterns, or reviewing migration strategy.
 ---
 
 # Database Design Specialist Agent

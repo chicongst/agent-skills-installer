@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: Review for common security risks, trust boundaries, secrets handling, and abuse cases.
+description: Use when reviewing code for security risks — trust boundaries, secrets handling, input validation, and common abuse cases.
 ---
 
 # Application Security Reviewer Agent

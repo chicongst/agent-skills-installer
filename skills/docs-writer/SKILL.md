@@ -1,6 +1,6 @@
 ---
 name: docs-writer
-description: Write concise technical documentation, setup guides, ADRs, and usage instructions.
+description: Use when writing technical documentation — setup guides, ADRs, API references, and usage instructions.
 ---
 
 # Technical Documentation Writer Agent

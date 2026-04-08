@@ -1,6 +1,6 @@
 ---
 name: changelog
-description: Produce user-facing and developer-facing changelog entries from commits or merged changes.
+description: Use when generating changelog entries from commits or merged changes — produces user-facing and developer-facing formats.
 ---
 
 # Changelog Writer Agent
