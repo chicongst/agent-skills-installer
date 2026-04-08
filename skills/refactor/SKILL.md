@@ -59,7 +59,53 @@ const isValid = validateAge(age) && validateName(name) && checkDuplicate(email)
 const isValid = (age >= 18 && age <= 120) && name.length > 0 && !existingEmails.has(email)
 ```
 
-### 4. Wrappers that add no value
+### 4. Type definitions scattered outside module structure (TypeScript)
+
+```
+❌ WRONG: Enum, interface, type, const defined inline at top of service file
+// user.service.ts
+enum Plan { PRO = 'PRO', FREE = 'FREE' }
+interface UserFilter { ... }
+const MAX_RETRIES = 3
+
+❌ WRONG: Hardcoded string literals instead of enum
+if (user.plan === 'PRO') { ... }
+
+✅ RIGHT: Each type artifact in its dedicated module folder
+// modules/user/enums/plan.enum.ts
+export enum Plan { PRO = 'PRO', FREE = 'FREE' }
+
+// modules/user/interfaces/user-filter.interface.ts
+export interface UserFilter { ... }
+
+// modules/user/constants/user.constant.ts
+export const MAX_RETRIES = 3
+```
+
+**Rule:** Enums, interfaces, types, and constants belong in dedicated folders within their module (`enums/`, `interfaces/`, `types/`, `constants/`). Never define them inline at file top, outside a class, or scattered across unrelated files. This applies to any TypeScript codebase.
+
+### 5. Decorators duplicated instead of composed (NestJS / decorator frameworks)
+
+```
+❌ WRONG: Same decorator stack copy-pasted across 10 controllers
+@UseGuards(JwtGuard)
+@Roles(Role.ADMIN)
+@ApiBearerAuth()
+async someMethod() { ... }
+
+✅ RIGHT: Create a shared custom decorator
+// decorators/admin.decorator.ts
+export const AdminRoute = () => applyDecorators(
+  UseGuards(JwtGuard), Roles(Role.ADMIN), ApiBearerAuth()
+)
+
+@AdminRoute()
+async someMethod() { ... }
+```
+
+**Rule:** When the same decorator combination appears on 3+ methods, extract into a custom composed decorator. Applies to NestJS and any framework using decorators.
+
+### 6. Wrappers that add no value
 
 ```
 ❌ WRONG: Wrap a library just to wrap it
@@ -86,6 +132,14 @@ export const log = (msg, ctx) => logger.info({ msg, requestId: ctx.requestId, ti
 | God class / God function | Split by domain boundary |
 | Dead code | Delete entirely — do not comment out |
 | Confusing names | Rename to clarify intent |
+| Magic values (strings/numbers) in logic | Enum for variant sets (`enums/`), constant for fixed values (`constants/`) |
+| Type artifacts inline or at file top | Move to dedicated module folder (`enums/`, `interfaces/`, `types/`, `constants/`) |
+| Same decorator stack on 3+ methods | Extract to shared custom decorator |
+| Business logic in controller/route handler | Move to service layer — controllers only route and validate |
+| Boolean flag parameter that changes behavior | Split into two explicit functions |
+| List endpoint without pagination | Add pagination — unbounded queries are a production time bomb |
+| Multi-step DB writes without transaction | Wrap in transaction — partial writes corrupt data |
+| Same value/logic defined in multiple places | Single source of truth — one change should require one edit |
 
 ### Do NOT refactor when
 
@@ -105,7 +159,10 @@ export const log = (msg, ctx) => logger.info({ msg, requestId: ctx.requestId, ti
 - **Rename** — clearer intent
 - **Early return / Guard clause** — reduce nesting
 - **Remove dead code** — delete entirely, don't comment out
-- **Replace magic numbers** — named constant
+- **Replace magic values** — choose the right destination:
+  - **Enum** (`enums/`): finite set of variants used in comparisons/switches — `Plan.PRO`, `Status.ACTIVE`, `Role.ADMIN`
+  - **Constant** (`constants/`): single fixed configuration value — `MAX_RETRIES = 3`, `TIMEOUT_MS = 5000`, `DATE_FORMAT = 'YYYY-MM-DD'`
+- **Add explicit return types** — makes function contract visible; prevents silent type drift
 - **Inline trivial function** — remove unnecessary indirection
 
 ### Tier 2: Good in the right context
@@ -160,3 +217,7 @@ export const log = (msg, ctx) => logger.info({ msg, requestId: ctx.requestId, ti
 4. **Inline > Extract when a function is used in only one place and is < 5 lines**
 5. **Do not create new files unless truly necessary** — fewer files = less complexity
 6. **Test first, refactor second** — no tests means write tests first; that IS part of refactoring
+7. **Type artifacts belong in module folders** — `enums/`, `interfaces/`, `types/`, `constants/` — never inline or at file top
+8. **Enum vs Constant** — finite variant set → `enums/`; single fixed value → `constants/`
+9. **Single source of truth** — same logic in two places = refactor into one; same value in two places = extract to shared definition
+10. **Controllers are thin** — routing and input validation only; all business logic lives in services

@@ -56,6 +56,33 @@ You are **PR Reviewer**, a senior engineer who reviews pull requests for merge r
 - [ ] Error handling present and appropriate
 - [ ] No race conditions or concurrency issues
 - [ ] No breaking changes to public APIs
+- [ ] Independent async operations run concurrently — no waterfall awaits on unrelated operations
+- [ ] Relations/associations loaded only when actually used — no unused eager loads, no N+1
+- [ ] List endpoints have pagination — no unbounded queries returning entire tables
+- [ ] Multi-step DB writes wrapped in transactions — partial writes corrupt data
+- [ ] Idempotent where possible — same request retried safely (especially POST/PUT)
+- [ ] Error responses don't leak internal details (stack traces, DB schema, internal paths)
+- [ ] HTTP status codes follow RFC 9110 semantics (not 200 for everything):
+
+| Status | When to use |
+|--------|-------------|
+| 200 | Successful GET, PUT/PATCH that returns updated resource |
+| 201 | Resource created (POST) — include `Location` header |
+| 204 | Success with no response body (DELETE, PUT/PATCH with no return) |
+| 400 | Malformed request syntax, invalid request framing |
+| 401 | Missing or invalid authentication credentials |
+| 403 | Authenticated but not authorized for this resource/action |
+| 404 | Resource does not exist |
+| 409 | Conflict — duplicate resource, version mismatch, state conflict |
+| 422 | Request is well-formed but semantically invalid (validation errors) |
+| 429 | Rate limit exceeded |
+
+### Code Organization
+- [ ] Type definitions (enum, interface, type, constant) in dedicated module folders — not scattered inline at file top or outside class boundaries
+- [ ] Method/function names don't repeat their class/module context (✅ `UserService.getById()`, ❌ `UserService.getUserById()`)
+- [ ] Single source of truth — same logic/value not defined in multiple places
+- [ ] Separation of concerns — controller handles routing/validation only, business logic lives in service layer
+- [ ] No boolean flag parameters that switch function behavior — split into two explicit functions
 
 ### Over-engineering (Flag These)
 - [ ] No unnecessary abstractions (strategy/factory for 1 variant)
@@ -83,6 +110,21 @@ You are **PR Reviewer**, a senior engineer who reviews pull requests for merge r
 - [ ] Feature flags for risky changes
 - [ ] Logging and monitoring for new functionality
 - [ ] Rollback plan identified
+- [ ] Third-party integrations wrapped in Adapter — not called directly from business logic
+
+### TypeScript (when applicable)
+- [ ] No `any` type — define specific interfaces, DTOs, or generics
+- [ ] Magic values use the right construct: **enum** for variant sets (`Plan.PRO`), **const** for fixed values (`MAX_RETRIES`)
+- [ ] Functions have explicit return types — implicit returns hide contract drift and cause silent breaks
+- [ ] Response type matches what DB/service actually returns — mismatch causes silent 500 at runtime
+- [ ] No adding extra fields to entity classes for convenience — create a separate type/DTO instead
+
+### NestJS (when applicable)
+- [ ] All params/body/query validated via DTO class-validator decorators
+- [ ] Env vars validated at startup (Joi schema or class-validator in ConfigModule)
+- [ ] Shared custom decorators for repeated decorator stacks (3+) via `applyDecorators`
+- [ ] Migrations use raw SQL only — no entity/ORM imports in migration files
+- [ ] Seeders contain fake/test data only — real production data goes in migrations
 
 ## Output Format
 
