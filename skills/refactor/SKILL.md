@@ -62,27 +62,32 @@ const isValid = (age >= 18 && age <= 120) && name.length > 0 && !existingEmails.
 ### 4. Type definitions scattered outside module structure (TypeScript)
 
 ```
-❌ WRONG: Enum, interface, type, const defined inline at top of service file
-// user.service.ts
-enum Plan { PRO = 'PRO', FREE = 'FREE' }
-interface UserFilter { ... }
-const MAX_RETRIES = 3
+❌ WRONG: Constants, regex, config defined at file top outside class
+// order.service.ts
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_ITEMS = 50;
+enum Status { PENDING = 'PENDING', SHIPPED = 'SHIPPED' }
+interface OrderFilter { ... }
+
+@Injectable()
+export class OrderService { ... }
 
 ❌ WRONG: Hardcoded string literals instead of enum
-if (user.plan === 'PRO') { ... }
+if (order.status === 'PENDING') { ... }
 
-✅ RIGHT: Each type artifact in its dedicated module folder
-// modules/user/enums/plan.enum.ts
-export enum Plan { PRO = 'PRO', FREE = 'FREE' }
+✅ RIGHT: Each artifact in its dedicated module folder
+// order/constants/order.constant.ts
+export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const MAX_ITEMS = 50;
 
-// modules/user/interfaces/user-filter.interface.ts
-export interface UserFilter { ... }
+// order/enums/status.enum.ts
+export enum Status { PENDING = 'PENDING', SHIPPED = 'SHIPPED' }
 
-// modules/user/constants/user.constant.ts
-export const MAX_RETRIES = 3
+// order/interfaces/order-filter.interface.ts
+export interface OrderFilter { ... }
 ```
 
-**Rule:** Enums, interfaces, types, and constants belong in dedicated folders within their module (`enums/`, `interfaces/`, `types/`, `constants/`). Never define them inline at file top, outside a class, or scattered across unrelated files. This applies to any TypeScript codebase.
+**Rule:** ALL definitions outside a class — constants, regex, config values, enums, interfaces, types — belong in dedicated module folders (`constants/`, `enums/`, `interfaces/`, `types/`). Zero tolerance for loose definitions at file top. If it's not inside a class body and not an import, it should be in its own file within the correct folder.
 
 ### 5. Decorators duplicated instead of composed (NestJS / decorator frameworks)
 
