@@ -27,7 +27,7 @@ Usage:
 Options:
   --target <claude|windsurf>                      Default: claude
   --scope <global|workspace>                      Default: global
-  --bundle <core|backend|frontend|fullstack|all> Default: core
+  --bundle <core|backend|frontend|fullstack|dotnet|all> Default: core
   --import-github <url>                           Import skill folders from a GitHub repo
   --import-dir <path>                             Import skill folders from a local directory
   --without-support-files                         Do not create support files
@@ -155,6 +155,12 @@ algorithm-review
 mastery
 EOF
       ;;
+    dotnet)
+      cat <<'EOF'
+dotnet-code-review
+dotnet-code-refactor
+EOF
+      ;;
     all)
       cat <<'EOF'
 architect
@@ -174,6 +180,8 @@ changelog
 ui-design
 algorithm-review
 mastery
+dotnet-code-review
+dotnet-code-refactor
 EOF
       ;;
     *)
@@ -365,6 +373,7 @@ Bundles:
   - backend
   - frontend
   - fullstack
+  - dotnet
   - all
 
 Core skills:
@@ -395,7 +404,7 @@ validate_args() {
   esac
 
   case "$BUNDLE" in
-    core|backend|frontend|fullstack|all) ;;
+    core|backend|frontend|fullstack|dotnet|all) ;;
     *) err "Invalid --bundle: $BUNDLE" ;;
   esac
 }

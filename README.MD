@@ -66,6 +66,8 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 | `pr-review` | PR scope, risks, test gaps, change clarity, merge readiness |
 | `changelog` | User-facing and developer-facing changelog entries from commits |
 | `ui-design` | Design tokens, color palettes (light/dark), typography, spacing, UX, SEO |
+| `dotnet-code-review` | Multi-dimensional .NET / C# code review — blast radius, correctness, security, performance, maintainability, testability |
+| `dotnet-code-refactor` | Safe .NET / C# refactoring — code smells, risk classification, characterization tests, smallest-change-at-a-time (modifies code) |
 
 ---
 
@@ -102,7 +104,12 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 - changelog
 - ui-design
 
-### `all` = fullstack (all skills)
+### `dotnet`
+
+- dotnet-code-review
+- dotnet-code-refactor
+
+### `all` = fullstack + dotnet (all skills)
 
 ---
 
