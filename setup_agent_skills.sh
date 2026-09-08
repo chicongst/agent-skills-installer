@@ -222,12 +222,18 @@ write_skill() {
   run_cmd mkdir -p "$dst"
   run_cmd cp "$src/SKILL.md" "$dst/SKILL.md"
 
+  # Replace the support files rather than merging into them. Two reasons:
+  # `cp -r src/examples dst/examples` nests as dst/examples/examples when the
+  # destination already exists, and a re-install must also drop support files
+  # the skill no longer ships.
   if [[ "$WITHOUT_SUPPORT_FILES" -ne 1 ]]; then
+    run_cmd rm -rf "$dst/examples"
+    run_cmd rm -f "$dst/template.md"
     if [[ -f "$src/template.md" ]]; then
       run_cmd cp "$src/template.md" "$dst/template.md"
     fi
     if [[ -d "$src/examples" ]]; then
-      run_cmd cp -r "$src/examples" "$dst/examples"
+      run_cmd cp -R "$src/examples" "$dst/examples"
     fi
   fi
 
