@@ -92,6 +92,7 @@ skills_for_bundle() {
 architect
 code-review
 debug
+fix-bug
 refactor
 test-writer
 security-review
@@ -106,6 +107,7 @@ EOF
 architect
 code-review
 debug
+fix-bug
 refactor
 test-writer
 security-review
@@ -124,6 +126,7 @@ EOF
 architect
 code-review
 debug
+fix-bug
 refactor
 test-writer
 security-review
@@ -139,6 +142,7 @@ EOF
 architect
 code-review
 debug
+fix-bug
 refactor
 test-writer
 security-review
@@ -166,6 +170,7 @@ EOF
 architect
 code-review
 debug
+fix-bug
 refactor
 test-writer
 security-review
@@ -178,6 +183,7 @@ performance-review
 pr-review
 changelog
 ui-design
+document-review
 algorithm-review
 mastery
 dotnet-code-review
@@ -188,22 +194,6 @@ EOF
       err "Unknown bundle: $1"
       ;;
   esac
-}
-
-skill_description() {
-  local skill="$1"
-  local file="$BUNDLED_SKILLS_DIR/$skill/SKILL.md"
-  if [[ -f "$file" ]]; then
-    grep '^description: ' "$file" | head -1 | sed 's/^description: //'
-  else
-    echo "General-purpose engineering skill."
-  fi
-}
-
-
-skill_dir_exists() {
-  local dir="$1"
-  [[ -d "$dir" ]]
 }
 
 write_skill() {
@@ -269,9 +259,17 @@ verify_skill() {
   grep -q "^name: $skill$" "$file" || { log "verify fail $skill: missing/invalid name"; return 1; }
   grep -q '^description: ' "$file" || { log "verify fail $skill: missing description"; return 1; }
 
+  # template.md and examples/ are optional: skills that apply silently (mastery, ui-design)
+  # or embed their output format in SKILL.md have no separate template. Only verify that
+  # whatever the source ships was actually copied.
   if [[ "$WITHOUT_SUPPORT_FILES" -ne 1 ]]; then
-    [[ -f "$dir/template.md" ]] || { log "verify fail $skill: missing template.md"; return 1; }
-    [[ -d "$dir/examples" ]] || { log "verify fail $skill: missing examples dir"; return 1; }
+    local src="$BUNDLED_SKILLS_DIR/$skill"
+    if [[ -f "$src/template.md" && ! -f "$dir/template.md" ]]; then
+      log "verify fail $skill: template.md not installed"; return 1
+    fi
+    if [[ -d "$src/examples" && ! -d "$dir/examples" ]]; then
+      log "verify fail $skill: examples dir not installed"; return 1
+    fi
   fi
 
   log "verify ok   $skill"

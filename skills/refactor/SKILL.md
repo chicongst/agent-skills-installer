@@ -87,7 +87,9 @@ export enum Status { PENDING = 'PENDING', SHIPPED = 'SHIPPED' }
 export interface OrderFilter { ... }
 ```
 
-**Rule:** ALL definitions outside a class — constants, regex, config values, enums, interfaces, types — belong in dedicated module folders (`constants/`, `enums/`, `interfaces/`, `types/`). Zero tolerance for loose definitions at file top. If it's not inside a class body and not an import, it should be in its own file within the correct folder.
+**Rule (applies only to projects that already use this layout — NestJS, Angular, and similar layered module structures):** definitions shared beyond one file — constants, regex, config values, enums, interfaces, types — belong in the project's dedicated module folders (`constants/`, `enums/`, `interfaces/`, `types/`).
+
+**Check the project's existing layout first.** If the codebase colocates types next to their usage (typical in Go, Python, Rust, and most React projects), keep colocating — moving them into folders the project does not use is churn, not refactoring. A type used in exactly one file stays in that file regardless of convention; see Iron Rule 5.
 
 ### 5. Decorators duplicated instead of composed (NestJS / decorator frameworks)
 
@@ -138,7 +140,7 @@ export const log = (msg, ctx) => logger.info({ msg, requestId: ctx.requestId, ti
 | Dead code | Delete entirely — do not comment out |
 | Confusing names | Rename to clarify intent |
 | Magic values (strings/numbers) in logic | Enum for variant sets (`enums/`), constant for fixed values (`constants/`) |
-| Type artifacts inline or at file top | Move to dedicated module folder (`enums/`, `interfaces/`, `types/`, `constants/`) |
+| Type artifacts at file top, shared across files, in a project that uses module folders | Move to the project's `enums/`, `interfaces/`, `types/`, `constants/` folder |
 | Same decorator stack on 3+ methods | Extract to shared custom decorator |
 | Business logic in controller/route handler | Move to service layer — controllers only route and validate |
 | Boolean flag parameter that changes behavior | Split into two explicit functions |
@@ -222,7 +224,7 @@ export const log = (msg, ctx) => logger.info({ msg, requestId: ctx.requestId, ti
 4. **Inline > Extract when a function is used in only one place and is < 5 lines**
 5. **Do not create new files unless truly necessary** — fewer files = less complexity
 6. **Test first, refactor second** — no tests means write tests first; that IS part of refactoring
-7. **Type artifacts belong in module folders** — `enums/`, `interfaces/`, `types/`, `constants/` — never inline or at file top
+7. **Follow the project's existing layout for shared types** — in a project with `enums/`, `interfaces/`, `types/`, `constants/` folders, shared definitions go there; in a project that colocates, they stay colocated. Never introduce a folder convention the codebase does not already use.
 8. **Enum vs Constant** — finite variant set → `enums/`; single fixed value → `constants/`
 9. **Single source of truth** — same logic in two places = refactor into one; same value in two places = extract to shared definition
 10. **Controllers are thin** — routing and input validation only; all business logic lives in services

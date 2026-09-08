@@ -68,97 +68,28 @@ Use CSS custom properties (or equivalent: SCSS variables, design tokens, theme o
 }
 ```
 
-### Palette B — Slate (cool-toned, professional, dashboard)
+### Palette B — Slate (cool-toned, professional, dashboard) / Palette C — Stone (warm, editorial, content-first)
 
-```css
-:root {
-  --color-bg:          #ffffff;
-  --color-bg-subtle:   #f8fafc;
-  --color-bg-muted:    #f1f5f9;
+Same token contract as Palette A — only the values change. Swap these in:
 
-  --color-fg:          #0f172a;
-  --color-fg-muted:    #64748b;
-  --color-fg-subtle:   #94a3b8;
+| Token | Slate light | Slate dark | Stone light | Stone dark |
+|-------|------------|-----------|------------|-----------|
+| `--color-bg` | `#ffffff` | `#0f172a` | `#ffffff` | `#1c1917` |
+| `--color-bg-subtle` | `#f8fafc` | `#1e293b` | `#f5f5f4` | `#292524` |
+| `--color-bg-muted` | `#f1f5f9` | `#334155` | `#e7e5e4` | `#44403c` |
+| `--color-fg` | `#0f172a` | `#f8fafc` | `#1c1917` | `#fafaf9` |
+| `--color-fg-muted` | `#64748b` | `#94a3b8` | `#78716c` | `#a8a29e` |
+| `--color-fg-subtle` | `#94a3b8` | `#64748b` | `#a8a29e` | `#78716c` |
+| `--color-border` | `#e2e8f0` | `#334155` | `#e7e5e4` | `#44403c` |
+| `--color-border-strong` | `#cbd5e1` | `#475569` | `#d6d3d1` | `#57534e` |
+| `--color-primary` | `#0f172a` | `#f8fafc` | `#1c1917` | `#fafaf9` |
+| `--color-primary-fg` | `#f8fafc` | `#0f172a` | `#fafaf9` | `#1c1917` |
+| `--color-primary-hover` | `#1e293b` | `#e2e8f0` | `#292524` | `#e7e5e4` |
+| `--color-accent` | `#6366f1` | `#818cf8` | `#f97316` | `#fb923c` |
+| `--color-accent-fg` | `#ffffff` | `#0f172a` | `#ffffff` | `#1c1917` |
+| `--color-accent-hover` | `#4f46e5` | `#a5b4fc` | `#ea580c` | `#fdba74` |
 
-  --color-border:      #e2e8f0;
-  --color-border-strong: #cbd5e1;
-
-  --color-primary:     #0f172a;
-  --color-primary-fg:  #f8fafc;
-  --color-primary-hover: #1e293b;
-
-  --color-accent:      #6366f1;
-  --color-accent-fg:   #ffffff;
-  --color-accent-hover: #4f46e5;
-}
-
-[data-theme="dark"] {
-  --color-bg:          #0f172a;
-  --color-bg-subtle:   #1e293b;
-  --color-bg-muted:    #334155;
-
-  --color-fg:          #f8fafc;
-  --color-fg-muted:    #94a3b8;
-  --color-fg-subtle:   #64748b;
-
-  --color-border:      #334155;
-  --color-border-strong: #475569;
-
-  --color-primary:     #f8fafc;
-  --color-primary-fg:  #0f172a;
-  --color-primary-hover: #e2e8f0;
-
-  --color-accent:      #818cf8;
-  --color-accent-fg:   #0f172a;
-  --color-accent-hover: #a5b4fc;
-}
-```
-
-### Palette C — Stone (warm, editorial, content-first)
-
-```css
-:root {
-  --color-bg:          #ffffff;
-  --color-bg-subtle:   #f5f5f4;
-  --color-bg-muted:    #e7e5e4;
-
-  --color-fg:          #1c1917;
-  --color-fg-muted:    #78716c;
-  --color-fg-subtle:   #a8a29e;
-
-  --color-border:      #e7e5e4;
-  --color-border-strong: #d6d3d1;
-
-  --color-primary:     #1c1917;
-  --color-primary-fg:  #fafaf9;
-  --color-primary-hover: #292524;
-
-  --color-accent:      #f97316;
-  --color-accent-fg:   #ffffff;
-  --color-accent-hover: #ea580c;
-}
-
-[data-theme="dark"] {
-  --color-bg:          #1c1917;
-  --color-bg-subtle:   #292524;
-  --color-bg-muted:    #44403c;
-
-  --color-fg:          #fafaf9;
-  --color-fg-muted:    #a8a29e;
-  --color-fg-subtle:   #78716c;
-
-  --color-border:      #44403c;
-  --color-border-strong: #57534e;
-
-  --color-primary:     #fafaf9;
-  --color-primary-fg:  #1c1917;
-  --color-primary-hover: #e7e5e4;
-
-  --color-accent:      #fb923c;
-  --color-accent-fg:   #1c1917;
-  --color-accent-hover: #fdba74;
-}
-```
+Pick one palette per project and commit to it. Do not mix tokens across palettes.
 
 ### Semantic State Colors (universal, pair with any palette)
 

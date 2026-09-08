@@ -5,7 +5,18 @@ description: Use when writing, modifying, or generating any code — automatical
 
 # Senior Engineering Principles
 
-You internalize these principles and apply them silently when writing code. Do not announce or checklist — just write better code. Skip any principle that does not exist or is irrelevant in the current language or context.
+You internalize these principles and apply them silently while writing code. Do not announce them, do not emit a checklist, do not produce a report — just write better code. Skip any principle that does not exist or is irrelevant in the current language or context.
+
+This skill covers what you decide *while typing*. For deep dives, defer to the dedicated skill instead of duplicating its judgment here:
+
+| Topic | Skill |
+|-------|-------|
+| Schema, index design, query plans | `db-design` |
+| Profiling, benchmarking, optimization tradeoffs | `performance-review` |
+| Threat modeling, vulnerability review | `security-review` |
+| Service boundaries, messaging topology, failure design | `architect` |
+| Endpoint contracts, versioning, pagination shape | `api-design` |
+| Test strategy and coverage design | `test-writer` |
 
 ## Context Awareness
 
@@ -17,17 +28,13 @@ Assess before writing:
 
 Let context drive complexity. Never over-engineer a throwaway script. Never under-engineer a payment flow.
 
-## Concurrency & Async
+## KISS, YAGNI, DRY
 
-- Prefer async/await (or language equivalent) over raw callbacks or manual thread management
-- Identify shared mutable state and protect it — mutex, lock, atomic, channel, or immutable design
-- Avoid race conditions: never assume ordering without explicit synchronization
-- Use structured concurrency where available (task groups, coroutine scope, context cancellation)
-- Handle cancellation and timeout explicitly — never let async work run unbounded
-- Prefer message passing over shared memory when crossing boundaries
-- **Locking strategy**: use **pessimistic lock** (SELECT FOR UPDATE) when contention is high and conflicts are frequent (inventory, seat booking); use **optimistic lock** (version/timestamp column, check-then-update) when conflicts are rare and throughput matters
-- **Oversell / ghost read prevention**: never rely on a read-then-write sequence without holding a lock — between the read and the write, another transaction can mutate the same row. Use atomic DB operations (`UPDATE stock SET qty = qty - 1 WHERE qty > 0`), pessimistic lock, or distributed lock (Redis SETNX) for critical sections
-- Phantom read: when a transaction re-queries a range and sees new rows inserted by another — use SERIALIZABLE isolation or range locks for strict consistency
+- **KISS** — choose the simplest solution that works. Complexity is a cost, not a feature.
+- **YAGNI** — don't build for hypothetical future requirements. Add extension points only when the second use case arrives.
+- **DRY** — extract when duplication exceeds 3 occurrences AND the abstraction is stable. Premature DRY is worse than duplication.
+
+Three similar lines of code beat a premature abstraction. Reach for a design pattern only when a plain function has already failed — a pattern applied to one variant is over-engineering, not craft.
 
 ## Error Handling
 
@@ -38,164 +45,104 @@ Let context drive complexity. Never over-engineer a throwaway script. Never unde
 - Include context in errors — what failed, with what input, why it matters
 - Avoid catch-all handlers in business logic — catch specific errors, let unexpected ones bubble
 
+## Concurrency & Async
+
+- Prefer async/await (or language equivalent) over raw callbacks or manual thread management
+- Identify shared mutable state and protect it — mutex, lock, atomic, channel, or immutable design
+- Never assume ordering without explicit synchronization
+- Use structured concurrency where available (task groups, coroutine scope, context cancellation)
+- Handle cancellation and timeout explicitly — never let async work run unbounded
+- Run independent async work concurrently; sequential `await` on unrelated calls is a latency bug
+- **Never read-then-write without holding a lock.** Between the read and the write, another transaction can mutate the same row — this is how oversell and lost updates happen. Use an atomic operation (`UPDATE stock SET qty = qty - 1 WHERE qty > 0`), a pessimistic lock when contention is high, or an optimistic version check when conflicts are rare.
+
 ## Retry & Resilience
 
-- Use exponential backoff with jitter for transient failures (network, rate limit, lock contention)
-- Set max retry count and total timeout — never retry forever
-- Apply circuit breaker pattern for external dependencies — fail fast when downstream is unhealthy
-- Make operations idempotent before adding retry — retry without idempotency causes duplication
-- Log each retry attempt with context for observability
+- Make an operation idempotent *before* adding retry — retry without idempotency causes duplication
+- Exponential backoff with jitter for transient failures; always set a max attempt count and total timeout
+- Circuit-break external dependencies — fail fast when downstream is unhealthy
+- Log each retry attempt with context
 
 ## Caching
 
-- Cache at the right layer — in-memory for hot path, distributed (Redis, Memcached) for shared state
+- Cache at the right layer — in-memory for hot path, distributed for shared state
 - Every cache entry needs an invalidation strategy — TTL, event-driven, or write-through
-- Guard against cache stampede — use locking, request coalescing, or stale-while-revalidate
+- Guard against stampede — locking, request coalescing, or stale-while-revalidate
 - Never cache sensitive data without encryption and access control
-- Consider cache warming for cold start scenarios
 
-## Batch Processing & Chunking
+## Bounded Data Movement
 
-- Process large datasets in chunks — never load unbounded data into memory
-- Choose chunk size based on memory constraints and downstream throughput
-- Use streaming/cursor-based iteration over full collection loading when possible
-- Handle partial failures within batches — track progress, support resume from last checkpoint
-- Apply backpressure — slow down producers when consumers can't keep up
+Two opposite problems, both solved by never moving data one row at a time:
 
-## Smart Batching
-
-- Aggregate many small operations into a single larger operation to reduce per-operation overhead
-- Apply to: DB bulk insert/update instead of per-row writes, API calls consolidated into batch endpoints, message queue flush instead of per-message send, DataLoader pattern for N+1 resolution
-- Collect items over a short time window (or until a size threshold) then flush as one batch — not one-by-one
-- Always handle partial batch failures — know which items succeeded and which failed, don't retry the whole batch blindly
-- Tune batch size and flush interval together — too small loses efficiency, too large increases latency and memory pressure
-- Distinguish from Chunking: Chunking splits large data down for safe processing; Smart Batching groups small operations up for efficient execution
-
-## Pagination
-
-- Use cursor-based pagination for large or real-time datasets — offset-based breaks with mutations
-- Always set a maximum page size — never let clients request unbounded results
-- Return pagination metadata (next cursor, has_more) in response
-- For offset pagination, be aware of performance degradation at high offsets
+- **Chunk large data down** — process big datasets in bounded chunks, stream or paginate with a cursor, never load unbounded results into memory. Handle partial failure: track progress, support resume from the last checkpoint.
+- **Batch small operations up** — bulk insert instead of per-row writes, batch endpoints instead of per-item calls, DataLoader instead of N+1. Flush on a size threshold or a short time window.
+- Apply backpressure — slow producers when consumers cannot keep up
+- Tune size and interval together — too small loses efficiency, too large adds latency and memory pressure
+- Know which item in a batch failed; never blindly retry the whole batch
 
 ## Query & Data Access
 
-- Prevent N+1 queries — use eager loading, batch loading (DataLoader pattern), or joins
-- Select only needed columns — avoid `SELECT *` in production code
-- Index columns used in WHERE, JOIN, ORDER BY — but don't over-index (write penalty)
-- Use query parameterization — never concatenate user input into queries
-- Set query timeouts — a missing WHERE clause shouldn't take down the database
-- Profile queries in development — slow queries are bugs
-- Run **EXPLAIN / EXPLAIN ANALYZE** on any non-trivial query before shipping — look for Seq Scan on large tables, high row estimates, and nested loop on unindexed joins
-- Avoid full table scans on large tables: ensure WHERE clauses use indexed columns, avoid `LIKE '%prefix'`, functions on indexed columns (`WHERE YEAR(created_at) = 2024`), or implicit type casts that bypass indexes
-- Composite index order matters — put the highest-cardinality or equality column first, range column last
-
-## Message Queue & Async Messaging
-
-- Use async messaging to decouple producers from consumers — the producer fires and forgets; the consumer processes at its own pace
-- Choose the simplest solution that fits: in-process event emitter → DB-backed queue → managed cloud queue → dedicated broker. Don't over-provision infra for a problem a DB job table can solve
-- Make consumers **idempotent** — at-least-once delivery is the default guarantee; the same message may arrive more than once. Design handlers to be safe to re-run
-- Configure a **Dead Letter Queue (DLQ)** — messages that fail repeatedly must not silently disappear; route to DLQ for inspection and replay
-- Set **message TTL** and **queue max-length** — unbounded queues will exhaust broker memory under backpressure
-- Prefer **pull-based consumers** over push when load is unpredictable — consumers control their own processing rate
-- Use async messaging to: flatten traffic spikes, defer slow work (email, export, report generation), fan-out to multiple consumers, and enable independent scaling of workers
-- For **event streaming** (replay, audit trail, multi-consumer fan-out, high throughput): choose a persistent, replayable log-based system
-- For **task queues** (job dispatch, scheduled work, priority queues, RPC-style async): choose a broker with flexible routing and retry semantics
-- Do not use a queue as a database — queues are for transient work in flight, not durable state
-
-## Performance
-
-- Measure before optimizing — use profilers, flame graphs, benchmarks, not intuition
-- Optimize the hot path — 80/20 rule, focus on what runs most frequently
-- Watch for hidden allocations — string concatenation in loops, unnecessary object creation
-- Use appropriate data structures — hash maps for lookup, sorted structures for range queries
-- Prefer lazy evaluation / streaming for large data — don't materialize what you don't need
-- Set and monitor memory budgets for long-running processes — prevent silent memory leaks
+- Prevent N+1 — eager load, batch load, or join
+- Select only the columns you need; never `SELECT *` in production code
+- Always parameterize — never concatenate user input into a query
+- Set query timeouts — a missing WHERE clause should not take down the database
+- Every list query needs a limit. Cursor pagination (`WHERE id > last_seen`) for large sets; offset only for small ones
+- Run EXPLAIN on any non-trivial query before shipping it. For index design and query-plan analysis, use `db-design`.
 
 ## Security Fundamentals
 
-- Validate and sanitize all external input — user input, API payloads, file uploads, URL parameters
-- Use parameterized queries — never build SQL/NoSQL queries from string concatenation
-- Apply principle of least privilege — services, DB users, API keys get minimum required permissions
-- Never hardcode secrets — use environment variables, secret managers, or vault
-- Hash passwords with modern algorithms (bcrypt, argon2) — never MD5/SHA for passwords
-- Set security headers, CORS policies, and rate limits at API boundaries
-- Audit authentication and authorization separately — authn confirms identity, authz confirms permission
+- Validate and sanitize all external input — request bodies, headers, uploads, URL parameters
+- Parameterized queries only
+- Least privilege for services, DB users, and API keys
+- Never hardcode secrets — environment variables, secret manager, or vault
+- Hash passwords with bcrypt or argon2 — never MD5/SHA
+- Security headers, CORS policy, and rate limits at API boundaries
+- Authentication and authorization are separate checks — confirm identity, then confirm permission
 
 ## Logging & Observability
 
-- Use structured logging (JSON) with consistent fields: timestamp, level, correlation/trace ID, context
-- Log at appropriate levels — ERROR for failures needing action, WARN for degraded state, INFO for business events, DEBUG for development
-- Never log sensitive data — passwords, tokens, PII, credit card numbers
+- Structured logging (JSON) with consistent fields: timestamp, level, correlation/trace ID, context
+- Log levels mean something: ERROR needs action, WARN is degraded state, INFO is a business event, DEBUG is for development
+- Never log secrets, tokens, or PII
 - Include request context — who, what, when, duration, outcome
-- Add metrics for business-critical operations — not just system health
-- Ensure logs are grep-friendly — searchable by trace ID across services
+- Add metrics for business-critical operations, not just system health
 
 ## Configuration Management
 
 - Externalize all configuration — no magic numbers, no hardcoded URLs, no embedded credentials
-- Validate configuration at startup — fail fast with clear error if required config is missing
-- Use typed/schema-validated config (zod, pydantic, viper) — not raw string parsing
-- Support environment-specific overrides without code changes
-- Document every config option — what it does, valid values, default
+- Validate configuration at startup — fail fast with a clear error if required config is missing
+- Use typed/schema-validated config, not raw string parsing
+- Document every option — what it does, valid values, default
 
 ## Code Organization
 
-- One module/class = one responsibility — if you can't name it clearly, it does too much
-- Keep functions short and focused — a function that needs a comment block to explain flow is too long
-- Minimize public API surface — expose only what consumers need, hide implementation details
+- One module/class = one responsibility — if you cannot name it clearly, it does too much
+- Keep functions short and focused — a function needing a comment block to explain its flow is too long
+- Minimize public API surface — expose only what consumers need
 - Group by feature/domain, not by technical layer — `user/` over `controllers/`, `services/`, `models/`
-- Avoid deep nesting — early return, guard clauses, extract helper functions
+- Avoid deep nesting — early return, guard clauses, extract helpers
 
-## SOLID Principles
+### SOLID
+- **Single Responsibility** — a module changes for one reason only
+- **Open/Closed** — extend through composition or polymorphism, not by editing existing code
+- **Liskov Substitution** — subtypes are drop-in replacements
+- **Interface Segregation** — many small interfaces over one large one
+- **Dependency Inversion** — depend on abstractions; inject dependencies, don't instantiate them
 
-- **Single Responsibility** — a class/module changes for one reason only
-- **Open/Closed** — extend behavior through composition or polymorphism, not modifying existing code
-- **Liskov Substitution** — subtypes must be drop-in replacements without breaking callers
-- **Interface Segregation** — many small interfaces over one large one; clients shouldn't depend on methods they don't use
-- **Dependency Inversion** — depend on abstractions, not concretions; inject dependencies, don't instantiate them
-
-In languages without classes/interfaces (C, shell, some scripting languages), apply the underlying ideas: separation of concerns, modularity, clear contracts between components.
-
-## Design Patterns
-
-Apply when they simplify — never force a pattern where a simple function would do:
-
-- **Singleton** — one instance globally (DB pool, config, logger). Prefer DI over global access
-- **Factory** — centralize object creation when the exact type depends on runtime input
-- **Builder** — construct complex objects step-by-step when constructors have too many parameters
-- **Adapter** — wrap third-party APIs behind your own interface for testability and swap-ability
-- **Decorator / Middleware** — layer behavior (logging, auth, caching) without modifying core logic
-- **Facade** — simplified interface to a complex subsystem (payment gateway, email service)
-- **Strategy** — swap algorithms at runtime without modifying consumers (parsers, validators, payment processors)
-- **Observer / Event Emitter** — decouple producers from consumers for event-driven flows
-- **Repository** — abstract data access behind a clean interface; swap storage without changing business logic
-- **DTO** — decouple internal models from external API contracts. Never expose database entities directly
-
-In languages without classes, use closures, higher-order functions, or module patterns to achieve the same decoupling.
-
-## DRY, KISS, YAGNI
-
-- **DRY** — extract when duplication exceeds 3 occurrences AND the abstraction is stable. Premature DRY is worse than duplication.
-- **KISS** — choose the simplest solution that works. Complexity is a cost, not a feature.
-- **YAGNI** — don't build for hypothetical future requirements. Add extension points only when the second use case arrives.
-
-Three similar lines of code is better than a premature abstraction.
+In languages without classes or interfaces, apply the underlying ideas: separation of concerns, modularity, clear contracts. Use closures, higher-order functions, or module patterns for the same decoupling.
 
 ## Dependency Management
 
-- Pin dependency versions in production — `1.2.3` not `^1.2.3`
-- Review changelogs before upgrading — especially major versions
+- Pin versions in production — `1.2.3`, not `^1.2.3`
+- Review changelogs before upgrading, especially major versions
 - Minimize dependency count — every dependency is a supply chain risk
-- Wrap third-party libraries behind your own interface — isolate blast radius of breaking changes
-- Audit dependencies for known vulnerabilities regularly
+- Wrap third-party libraries behind your own interface to isolate the blast radius of breaking changes
 
 ## Testing Awareness
 
-When writing code, make it testable by default:
+Make code testable by default:
 
-- Inject dependencies — don't hardcode database connections, API clients, or file paths
+- Inject dependencies — no hardcoded connections, clients, clocks, or file paths
 - Keep side effects at the edges — pure business logic in the core, I/O at the boundaries
-- Return values instead of mutating state — easier to assert, easier to reason about
-- Write small functions with clear inputs and outputs — each function is a testable unit
+- Return values instead of mutating state
+- Write small functions with clear inputs and outputs
 - Avoid global/static mutable state — it makes tests order-dependent and flaky

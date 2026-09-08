@@ -1,0 +1,137 @@
+# Example: /document-review
+
+## User Input (document to review)
+
+```markdown
+# Deployment Process
+
+Our deployment process is designed to be robust and seamless, leveraging
+best-in-class tooling to empower the team.
+
+## Steps
+
+1. Merge your PR.
+2. The pipeline runs.
+3. Verify the deploy looks good.
+4. Notify the team.
+
+## Rollback
+
+If something goes wrong, roll back.
+
+## Notes
+
+Deployments happen twice a day. The release window is 10:00-11:00.
+Only the on-call engineer can approve a release. See the runbook for details.
+Deploys are limited to one per day to reduce risk.
+```
+
+## Skill Output
+
+# Document Review: Deployment Process
+
+**Type**: Process guideline
+**Audience**: assumed — newcomer with zero project context (not stated in the doc)
+
+## Summary
+This document reads as a summary of a process the author already knows, not as
+instructions someone else can follow. Three of the four steps are not executable as
+written, the rollback section contains no procedure, and the Notes section
+contradicts itself on deploy frequency. Not safe to hand to a new engineer.
+
+## Critical
+
+### Step 3 cannot be executed — no definition of "looks good"
+**Location**: Steps > item 3
+**Problem**: "Verify the deploy looks good" gives the reader no criteria. A newcomer
+has no way to tell success from a partial failure, so they will either approve a
+broken deploy or block a healthy one.
+**Fix**: Replace with concrete checks:
+```
+3. Verify the deploy:
+   - Health endpoint returns 200: `curl https://api.example.com/health`
+   - Error rate in the dashboard stays below 1% for 5 minutes after deploy
+   - No new entries in the error log for the deployed service
+```
+
+### Rollback section contains no procedure
+**Location**: Rollback
+**Problem**: "If something goes wrong, roll back" is a restatement of the section
+title. During an incident the reader needs the command, the decision threshold, and
+who to tell — none are present. This is the section most likely to be read under
+pressure and it is empty.
+**Fix**: Specify the trigger, the command, and the verification:
+```
+Roll back when the error rate exceeds 5% or the health check fails twice.
+
+1. Run `deploy rollback --service <name> --to <previous-tag>`
+2. Confirm the health endpoint returns 200
+3. Post in #incidents with the service name and the tag you rolled back to
+```
+
+### Internal contradiction on deploy frequency
+**Location**: Notes
+**Problem**: "Deployments happen twice a day" and "Deploys are limited to one per day"
+directly contradict each other. A reader cannot determine the actual policy, and the
+two sentences sit four lines apart.
+**Fix**: Keep one statement. If both are true under different conditions, state the
+condition: "Scheduled deploys run twice daily (10:00 and 16:00). Hotfix deploys are
+limited to one per day outside those windows."
+
+## Major
+
+### Step 2 hides the entire automated process
+**Location**: Steps > item 2
+**Problem**: "The pipeline runs" tells the reader nothing about duration, what the
+pipeline does, or how to tell it failed. A newcomer will not know whether waiting
+20 minutes is normal or a sign of a hung job.
+**Fix**: "The CI pipeline runs (~12 min): tests, build, staging deploy, smoke tests.
+Watch it at [link]. A red X on any stage stops the deploy — see Rollback."
+
+### "Release window" and "approval" are stated but not wired into the steps
+**Location**: Notes vs Steps
+**Problem**: The Notes say only the on-call engineer can approve a release and that
+there is a 10:00-11:00 window, but neither constraint appears in the numbered steps.
+A reader following the steps in order will merge outside the window with no approval.
+**Fix**: Move both constraints into the steps as a precondition before item 1.
+
+### Undefined reference: "the runbook"
+**Location**: Notes
+**Problem**: "See the runbook for details" points at a document the reader cannot
+find. No name, no link.
+**Fix**: Link it directly, or remove the sentence.
+
+### Step 4 has no recipient or channel
+**Location**: Steps > item 4
+**Problem**: "Notify the team" does not say which team, in which channel, or what to
+include.
+**Fix**: "Post in #deploys: service name, version tag, and a link to the pipeline run."
+
+## Minor
+
+### Opening paragraph is marketing filler
+**Location**: Intro
+**Fix**: Delete "robust and seamless, leveraging best-in-class tooling to empower the
+team." Replace with the document's actual purpose: "How to deploy a service to
+production and roll back if it fails."
+
+### Purpose and scope are never stated
+**Location**: (document-wide)
+**Fix**: Add one line under the title naming which services this process covers and
+who it is for.
+
+## What Works
+- The numbered-step format is the right shape for this content — it only needs the
+  missing detail filled in
+- Separating Rollback into its own section makes it findable during an incident
+
+## Top Priorities
+1. Write the actual rollback procedure — command, threshold, notification
+2. Replace "looks good" in step 3 with concrete verification checks
+3. Resolve the once-vs-twice daily deploy contradiction
+4. Move the release window and on-call approval into the numbered steps
+5. Expand step 2 with pipeline duration and failure signal
+
+## Verdict
+**Not ready** — Three Critical findings mean a new engineer following this document
+would deploy without approval and be unable to roll back.

@@ -1,6 +1,6 @@
 ---
 name: dotnet-code-refactor
-description: Safely refactor .NET / C# code at Senior Engineer level — diagnose code smells, classify risk (SAFE/RISKY/DANGEROUS), check the test safety net (or add characterization tests first), apply smallest-change-at-a-time for one smell, preserve behavior, match project convention. Use whenever the user wants to actually rewrite, restructure, clean up, or improve existing code — phrases like refactor this, refactor code, clean up, restructure, improve code quality, fix code smell, extract function, extract class, rename, inline, simplify, make this cleaner, make this DRY. Also trigger after a dotnet-code-review when the user says "apply the fixes". Skill DOES modify code (unlike dotnet-code-review which only inspects).
+description: Safely refactor .NET / C# code at Senior Engineer level — diagnose code smells, classify risk (SAFE/RISKY/DANGEROUS), check the test safety net (or add characterization tests first), apply smallest-change-at-a-time for one smell, preserve behavior, match project convention. Use when the code being rewritten, restructured, cleaned up, or simplified is C#, .NET, or ASP.NET, and after a `dotnet-code-review` when the user says "apply the fixes". For any other language use `refactor`. DOES modify code (unlike `dotnet-code-review`, which only inspects).
 ---
 
 # Code Refactor (Safe code improvement at Senior Engineer level)

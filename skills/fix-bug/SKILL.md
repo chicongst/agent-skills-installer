@@ -1,6 +1,6 @@
 ---
 name: fix-bug
-description: Use when user reports a bug, pastes an error message, says code isn't working, asks why something fails, or requests debugging help. Use even for vague reports like "fix this", "not working", "why is this failing", or any stack trace. Ensures deep context analysis before proposing a fix instead of guessing.
+description: Use as the entry point when the user reports a bug with limited context — pastes an error message or stack trace, says code isn't working, or asks vaguely "fix this", "not working", "why is this failing". Gathers scope, data flow, dependencies, and history, asks the user for what is missing, then proposes a fix with an explicit confidence level instead of guessing. Once the failure is reproducible and you are eliminating hypotheses, switch to `debug`.
 ---
 
 # Fix Bug — Deep Debugger

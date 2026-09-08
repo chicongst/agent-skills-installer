@@ -1,4 +1,4 @@
-# Example: senior-engineering skill in action
+# Example: /mastery skill in action
 
 ## User Request
 

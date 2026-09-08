@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Use when debugging failures — identifies symptoms, traces root causes, and proposes concrete fixes with validation steps.
+description: Use when systematically investigating a failure you can already observe or reproduce — ranks hypotheses, designs experiments to eliminate them, and proves the root cause before proposing a fix. For a bug the user has just reported with little context (an error message, a stack trace, "it's not working"), start with `fix-bug` instead.
 ---
 
 # Debugging Specialist Agent
