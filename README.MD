@@ -50,6 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 |-------|-------------|
 | `architect` | System architecture, boundaries, data flow, tradeoffs, rollout plans |
 | `code-review` | Bugs, maintainability, correctness, edge cases, architecture issues |
+| `code-audit` | Full 20-dimension audit — architecture, SOLID, patterns, perf, security, DI, async, DB, API, domain — scored with fixes |
 | `debug` | Failures — symptoms, root cause, validation steps, concrete fixes |
 | `fix-bug` | Deep bug investigation — gathers context, traces root cause, proposes verified fix |
 | `refactor` | Simplify/restructure code without changing behavior — anti-patterns included |
@@ -62,6 +63,7 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 | `db-design` | Schema, indexing, constraints, query patterns, migration strategy |
 | `migration-safety` | Safe migrations — rollback, backward compatibility, observability |
 | `sre-engineering` | Production incidents, reliability, on-call triage, post-mortems |
+| `release-readiness` | Release risk, rollout plan, tested rollback, monitoring, go/no-go |
 | `performance-review` | Bottlenecks, profiling hotspots, measurement, optimization tradeoffs |
 | `pr-review` | PR scope, risks, test gaps, change clarity, merge readiness |
 | `changelog` | User-facing and developer-facing changelog entries from commits |

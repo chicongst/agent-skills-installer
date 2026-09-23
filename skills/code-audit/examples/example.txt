@@ -1,0 +1,79 @@
+# Example: /code-audit
+
+## User Input
+
+"Evaluate this source against these criteria: Architecture, Security, Error Handling,
+Async/Await, Validation, API Design, Overall Code Quality."
+
+```js
+// routes/users.js  (Express)
+router.get('/users/:id', async (req, res) => {
+  const user = await db.query('SELECT * FROM users WHERE id = ' + req.params.id);
+  res.json(user);
+});
+
+router.post('/users', async (req, res) => {
+  const u = req.body;
+  db.query(`INSERT INTO users (email, role) VALUES ('${u.email}', '${u.role}')`);
+  res.send('ok');
+});
+```
+
+## Skill Output
+
+# Code Audit: users route
+
+## Verdict
+BLOCKED — SQL injection on both endpoints and an unawaited write make this unsafe to ship.
+
+## Scorecard
+
+| # | Dimension | Score | Note |
+|---|---|---|---|
+| 1 | Architecture | 4/10 | SQL built inline in the route; no service/repository layer |
+| 6 | Security | 1/10 | String-concatenated SQL on user input, ×2 — full DB compromise |
+| 10 | Async/Await | 3/10 | POST write is not awaited; response sent before the row is written |
+| 11 | Error Handling | 2/10 | No try/catch; a rejected query crashes the request, leaks stack |
+| 13 | Validation | 1/10 | No validation of `id`, `email`, or `role`; `role` is client-set |
+| 18 | API Design | 4/10 | POST returns `'ok'` text, no 201, no Location, no error shape |
+| 20 | Overall Code Quality | 2/10 | Multiple BLOCKERs on reachable paths |
+
+(Other dimensions not requested — sweep them too in a full audit.)
+
+## Findings
+
+### 🔴 BLOCKER: SQL injection on GET and POST [verified pattern]
+**Dimension**: Security
+**Location**: users.js:3, users.js:9
+**Problem**: `req.params.id` and `u.email`/`u.role` are concatenated into SQL.
+**Risk**: `GET /users/1;DROP TABLE users` or `email = ')--` gives full read/write/delete of the database.
+**Fix**: Parameterized queries: `db.query('SELECT * FROM users WHERE id = $1', [req.params.id])`.
+
+### 🔴 BLOCKER: Privilege escalation via client-set `role`
+**Dimension**: Validation / Security
+**Location**: users.js:9
+**Problem**: `role` comes straight from the request body into the insert.
+**Risk**: Any caller creates an admin by sending `{"role":"admin"}`.
+**Fix**: Never accept `role` from the client; default it server-side and gate changes behind authz.
+
+### 🟠 MAJOR: POST write not awaited
+**Dimension**: Async/Await
+**Location**: users.js:9-10
+**Problem**: `db.query(...)` is not awaited; `res.send('ok')` runs before the write resolves. A failure is an unhandled rejection.
+**Fix**: `await` the insert inside try/catch; respond `201` only after it succeeds.
+
+### 🟠 MAJOR: No error handling
+**Dimension**: Error Handling
+**Location**: whole file
+**Fix**: Wrap handlers (or use an async error middleware); return a consistent error shape, never the raw stack.
+
+## What's Good
+- Routes are small and readable; async/await style is consistent even if misused on the write.
+
+## Action Plan
+1. Parameterize all SQL and drop client-set `role` — closes both BLOCKERs (~30 min).
+2. Add try/catch + await on the write; return 201 with the created resource (~20 min).
+3. Add request validation (id numeric, email format, role from an allow-list) at the boundary (~30 min).
+
+## Verdict
+BLOCKED

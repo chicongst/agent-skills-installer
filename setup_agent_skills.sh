@@ -91,6 +91,7 @@ skills_for_bundle() {
       cat <<'EOF'
 architect
 code-review
+code-audit
 debug
 fix-bug
 refactor
@@ -106,6 +107,7 @@ EOF
       cat <<'EOF'
 architect
 code-review
+code-audit
 debug
 fix-bug
 refactor
@@ -116,6 +118,7 @@ api-design
 db-design
 migration-safety
 sre-engineering
+release-readiness
 performance-review
 algorithm-review
 mastery
@@ -125,6 +128,7 @@ EOF
       cat <<'EOF'
 architect
 code-review
+code-audit
 debug
 fix-bug
 refactor
@@ -141,6 +145,7 @@ EOF
       cat <<'EOF'
 architect
 code-review
+code-audit
 debug
 fix-bug
 refactor
@@ -151,6 +156,7 @@ api-design
 db-design
 migration-safety
 sre-engineering
+release-readiness
 performance-review
 pr-review
 changelog
@@ -169,6 +175,7 @@ EOF
       cat <<'EOF'
 architect
 code-review
+code-audit
 debug
 fix-bug
 refactor
@@ -179,6 +186,7 @@ api-design
 db-design
 migration-safety
 sre-engineering
+release-readiness
 performance-review
 pr-review
 changelog
