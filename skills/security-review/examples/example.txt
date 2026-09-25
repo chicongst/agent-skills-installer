@@ -1,126 +1,405 @@
 # Example: /security-review
 
-## User Input (code to review)
+## User Input
 
+Security review before we expose this invoices API to customers. Node 22, Express 4, SQLite via `node:sqlite`. Clients send the token from `/login` in an `Authorization: Bearer` header.
+
+`db.js`
 ```javascript
-// Express.js login endpoint
-app.post('/api/login', async (req, res) => {
-  const { username, password } = req.body;
+const { DatabaseSync } = require('node:sqlite');
 
-  const query = `SELECT * FROM users WHERE username = '${username}'`;
-  const user = await db.query(query);
+function openDb(file = ':memory:') {
+  const db = new DatabaseSync(file);
+  db.exec(`
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user'
+    );
+    CREATE TABLE invoices (
+      id INTEGER PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id),
+      customer TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL
+    );
+  `);
+  return db;
+}
 
-  if (user && user.password === password) {
-    const token = jwt.sign({ userId: user.id, role: user.role }, 'secret123');
-    res.json({ token, user });
-  } else {
-    res.status(401).json({ error: 'Invalid credentials' });
+module.exports = { openDb };
+```
+
+`app.js`
+```javascript
+const crypto = require('node:crypto');
+const express = require('express');
+
+function createApp(db) {
+  const app = express();
+  app.use(express.json());
+  const sessions = new Map();
+
+  const hash = (pw) => crypto.createHash('sha256').update(pw).digest('hex');
+
+  function requireUser(req, res, next) {
+    const token = (req.get('authorization') || '').replace('Bearer ', '');
+    const userId = sessions.get(token);
+    if (!userId) return res.status(401).json({ error: 'unauthenticated' });
+    req.user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(userId);
+    next();
   }
-});
+
+  app.post('/signup', (req, res) => {
+    const { email, password, role } = req.body;
+    const info = db.prepare('INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)')
+      .run(email, hash(password), role || 'user');
+    res.status(201).json({ id: Number(info.lastInsertRowid) });
+  });
+
+  app.post('/login', (req, res) => {
+    console.log('login attempt', req.body);
+    const user = db.prepare('SELECT id, password_hash FROM users WHERE email = ?').get(req.body.email);
+    if (!user || user.password_hash !== hash(req.body.password)) {
+      return res.status(401).json({ error: 'invalid credentials' });
+    }
+    const token = crypto.randomBytes(32).toString('hex');
+    sessions.set(token, user.id);
+    res.json({ token });
+  });
+
+  app.get('/me', requireUser, (req, res) => {
+    res.json(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id));
+  });
+
+  app.get('/invoices', requireUser, (req, res) => {
+    const q = req.query.q || '';
+    const sql = `SELECT id, customer, amount_cents FROM invoices
+      WHERE owner_id = ${req.user.id} AND customer LIKE '%${q}%'`;
+    res.json(db.prepare(sql).all());
+  });
+
+  app.get('/invoices/:id', requireUser, (req, res) => {
+    const invoice = db.prepare('SELECT id, owner_id, customer, amount_cents FROM invoices WHERE id = ?')
+      .get(req.params.id);
+    if (!invoice) return res.status(404).json({ error: 'not found' });
+    res.json(invoice);
+  });
+
+  return app;
+}
+
+module.exports = { createApp };
 ```
 
 ## Skill Output
 
-# Security Review: POST /api/login
+# Security Review — invoices API (`app.js`, `db.js`)
 
-## Threat Model
-- **Trust boundaries**: All request body fields (username, password) are untrusted
-- **Sensitive data**: Passwords, JWT tokens, user PII
-- **Attack surface**: Public unauthenticated endpoint — highest risk surface
+**Scope:** `app.js` (all 5 routes and `requireUser`), `db.js` schema
+**Findings:** 🔴 3 · 🟠 3 · 🟡 3 · 💭 2
+**Verdict:** REQUEST CHANGES
+
+## Summary
+A small Express API with signup, token login, a profile route and invoice lookup/search. Any logged-in user can read any invoice by ID, the invoice search builds SQL from the query string, and anyone can sign up with an elevated role — three BLOCKERs, each confirmed by a failing local test. Password storage and handling (fast unsalted hash, hash returned by `/me`, password written to logs) need fixing before customers' data goes through it.
+
+## Trust boundaries and data flows
+| Entry point | Untrusted input | Reaches (sink / asset) | Controls present |
+|---|---|---|---|
+| `POST /signup` (public) | `email`, `password`, `role` | `users` INSERT | None — no type checks, `role` accepted |
+| `POST /login` (public) | `email`, `password` | `users` SELECT, `console.log`, session map | Parameterized query; no rate limit |
+| `GET /me` | bearer token | `users` row → response | `requireUser` |
+| `GET /invoices?q=` | bearer token, `q` | SQL text → invoices of caller | `requireUser`; `q` interpolated |
+| `GET /invoices/:id` | bearer token, `id` | invoices of **any** owner | `requireUser` only |
 
 ## Findings
 
-### 🔴 CRITICAL: SQL Injection
-**Location**: Line 4
-**CWE**: CWE-89 (SQL Injection)
-**Description**: `username` is interpolated directly into SQL string.
-**Exploit scenario**:
-```
-POST /api/login
-{"username": "admin'--", "password": "anything"}
-→ Executes: SELECT * FROM users WHERE username = 'admin'--'
-→ Returns admin user without password check
-```
-**Fix**:
+### 🔴 BLOCKER
+#### [B1] Invoice lookup is not scoped to the caller (IDOR) [verified]
+**Location:** `app.js:L48-L50`
+**Weakness:** Broken object-level authorization (CWE-639)
+**Root cause:** The route authenticates the caller but queries by `id` alone; `owner_id` is never compared with `req.user.id`.
+**Impact:** Every customer can read every other customer's invoices (customer name, amount).
+**Exploitability:** High — any logged-in user; IDs are sequential `INTEGER PRIMARY KEY` values.
+**Fix:**
 ```javascript
-// Use parameterized query
-const user = await db.query(
-  'SELECT * FROM users WHERE username = $1',
-  [username]
-);
+    const invoice = db.prepare(
+      'SELECT id, owner_id, customer, amount_cents FROM invoices WHERE id = ? AND owner_id = ?'
+    ).get(req.params.id, req.user.id);
 ```
+Returning 404 (not 403) for other users' invoices also avoids revealing which IDs exist.
+**Regression test:** `B1` — Bob gets 404 for Alice's invoice; Alice still gets 200.
 
-### 🔴 CRITICAL: Plaintext Password Comparison
-**Location**: Line 7
-**CWE**: CWE-256 (Plaintext Storage of Password)
-**Description**: `user.password === password` compares plaintext strings. Passwords
-must be stored as hashes (bcrypt/argon2), never in plaintext.
-**Exploit**: If DB is compromised, all user passwords are immediately exposed.
-**Fix**:
+#### [B2] Invoice search builds SQL from the query string (SQL injection) [verified]
+**Location:** `app.js:L42-L45`
+**Weakness:** SQL injection (CWE-89)
+**Root cause:** `q` is interpolated into the SQL text, so its characters are parsed as SQL instead of being treated as a value. A legitimate customer name containing an apostrophe already breaks the query (500, `syntax error` from SQLite).
+**Impact:** Query structure is controlled by the caller, which can remove the `owner_id` scoping and expose other tenants' rows.
+**Exploitability:** High — any logged-in user.
+**Fix:**
 ```javascript
-const bcrypt = require('bcrypt');
-const isValid = await bcrypt.compare(password, user.password_hash);
-if (user && isValid) { ... }
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    const rows = db.prepare(
+      `SELECT id, customer, amount_cents FROM invoices
+       WHERE owner_id = ? AND customer LIKE '%' || ? || '%'`
+    ).all(req.user.id, q);
+    res.json(rows);
 ```
+`%` and `_` inside `q` still act as `LIKE` wildcards — a matching nuance, not injection; add an `ESCAPE` clause if exact substring matching matters.
+**Regression test:** `B2` — searching `O'Brien` returns 200 and only the caller's matching invoice.
 
-### 🔴 CRITICAL: Hardcoded JWT Secret
-**Location**: Line 9
-**CWE**: CWE-798 (Hard-coded Credentials)
-**Description**: `'secret123'` is committed to source code. Anyone with repo access
-can forge valid JWTs for any user including admins.
-**Fix**:
+#### [B3] Signup accepts the `role` field from the client (mass assignment) [verified]
+**Location:** `app.js:L20-L22`
+**Weakness:** Mass assignment / privilege escalation (CWE-915)
+**Root cause:** `role` is destructured from the request body and written to the `users` row; the column default `'user'` only applies when the client omits it.
+**Impact:** Anyone can create an account with any role. `requireUser` loads `role` onto `req.user`, so any role check added later inherits the hole.
+**Exploitability:** High — `/signup` is unauthenticated.
+**Fix:** (m1's validation and duplicate-email handling included) — module scope:
 ```javascript
-// Load from environment variable, fail fast if missing
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET) throw new Error('JWT_SECRET environment variable required');
-const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, {
-  expiresIn: '24h'  // Always set expiration
+const isNonEmptyString = (v) => typeof v === 'string' && v.length > 0;
+const SQLITE_CONSTRAINT_UNIQUE = 2067;
+```
+and the signup handler:
+```javascript
+    const { email, password } = req.body;
+    if (!isNonEmptyString(email) || !isNonEmptyString(password)) {
+      return res.status(400).json({ error: 'email and password are required strings' });
+    }
+    let info;
+    try {
+      info = db.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?)')
+        .run(email, hashPassword(password));
+    } catch (err) {
+      if (err.errcode === SQLITE_CONSTRAINT_UNIQUE) {
+        return res.status(409).json({ error: 'email already registered' });
+      }
+      throw err;
+    }
+```
+Assign elevated roles only through an admin-only path.
+**Regression test:** `B3` — a signup body carrying a role still produces `role = 'user'`.
+
+### 🟠 MAJOR
+#### [M1] `/me` returns the password hash [verified]
+**Location:** `app.js:L38`
+**Weakness:** Sensitive data exposure (CWE-200)
+**Root cause:** `SELECT *` sends every column, including `password_hash`, to the client.
+**Impact:** The hash lands in browsers, proxies and client logs; with M2 it is cheap to reverse. Any column added to `users` later leaks the same way.
+**Exploitability:** High — any logged-in user (for their own row).
+**Fix:**
+```javascript
+    res.json(db.prepare('SELECT id, email, role FROM users WHERE id = ?').get(req.user.id));
+```
+**Regression test:** `M1` — the `/me` body has `email` and no `password_hash` key.
+
+#### [M2] Passwords stored as unsalted SHA-256 [verified]
+**Location:** `app.js:L9`, `app.js:L29`
+**Weakness:** Weak password hashing (CWE-916)
+**Root cause:** A single fast hash with no salt: identical passwords produce identical hashes, and a leaked table can be guessed at hardware speed. The comparison at L29 is also not constant-time.
+**Impact:** Any read of the `users` table (backup, B2-style query flaw, M1 response) turns into recovered passwords, which users reuse elsewhere.
+**Exploitability:** Low on its own — needs the hashes first; this code offers two ways to get them (B2, M1).
+**Fix:** (`scryptSync` for brevity; use async `crypto.scrypt` or the project's argon2/bcrypt library on a busy server)
+```javascript
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const key = crypto.scryptSync(pw, salt, 64);
+  return `scrypt$${salt.toString('hex')}$${key.toString('hex')}`;
+}
+
+function verifyPassword(pw, stored) {
+  const [scheme, saltHex, keyHex] = stored.split('$');
+  if (scheme !== 'scrypt') return false;
+  const expected = Buffer.from(keyHex, 'hex');
+  const actual = crypto.scryptSync(pw, Buffer.from(saltHex, 'hex'), expected.length);
+  return crypto.timingSafeEqual(actual, expected);
+}
+```
+and at L29: `if (!user || !verifyPassword(password, user.password_hash)) {`. Existing rows hold legacy SHA-256 hashes, which this `verifyPassword` rejects — see Questions before deploying.
+**Regression test:** `M2` — two users with the same password get different stored hashes, and login still succeeds.
+
+#### [M3] Login logs the raw request body, including the password [verified]
+**Location:** `app.js:L27`
+**Weakness:** Sensitive data in logs (CWE-532)
+**Root cause:** `console.log('login attempt', req.body)` writes the plaintext password (including near-miss typos of real passwords) to stdout.
+**Impact:** Everyone with log access, and every log pipeline and retention store, holds users' passwords.
+**Exploitability:** Low — requires log access, but the exposure is silent and persistent.
+**Fix:**
+```javascript
+    console.log('login attempt', { email });
+```
+**Regression test:** `M3` — with `console.log` captured, a login still logs but never contains the password.
+
+### 🟡 MINOR
+#### [m1] Bad or duplicate signup input crashes the handler and returns Express's HTML error page [verified]
+**Location:** `app.js:L20-L22` (incl. the L21 insert), `app.js:L28-L29`
+**Weakness:** Missing input validation / information exposure through error messages (CWE-209)
+**Root cause:** `hash(undefined)` throws on a missing password, and the L21 insert throws a UNIQUE constraint failure for an already-registered email; neither is caught, so Express's default handler answers 500 with an HTML page that includes the stack trace unless `NODE_ENV=production`.
+**Impact:** Internal paths and library details leak to clients in any non-production deployment; clients get 500 instead of a 400 or 409.
+**Exploitability:** High — anonymous.
+**Fix:** Validate `email`/`password` as non-empty strings and return 400 in both handlers — signup as shown in B3, which also catches the UNIQUE failure and returns 409; in login, destructure `{ email, password }` from `req.body` and apply the same check before L27 (the M2 and M3 snippets use those variables). Run with `NODE_ENV=production`.
+**Regression test:** `m1` (two tests) — signup without a password returns 400, and a second signup with the same email returns 409, both with a JSON error body.
+
+#### [m2] No attempt limiting on `/login`
+**Location:** `app.js:L26`
+**Weakness:** Improper restriction of authentication attempts (CWE-307)
+**Root cause:** Nothing in the app limits attempts per account or per client.
+**Impact:** Password guessing is limited only by network throughput. Raise to MAJOR if no gateway limit exists (see Questions).
+**Exploitability:** High — anonymous.
+**Fix:** Apply the gateway's or the project's rate limiter to `/login` and `/signup`, keyed per account and per client IP, with backoff.
+
+#### [m3] Session tokens never expire
+**Location:** `app.js:L7`, `app.js:L33`
+**Weakness:** Insufficient session expiration (CWE-613)
+**Root cause:** The session map stores tokens with no expiry and no logout route removes them.
+**Impact:** A token copied from a device or log works until the process restarts.
+**Exploitability:** Medium — requires obtaining a token first.
+**Fix:** Store `{ userId, expiresAt }` at L33 and reject and delete expired sessions in `requireUser`; add a logout route that deletes the token.
+
+### 💭 NIT
+- `app.js:L5` — Express sends `X-Powered-By: Express` by default; `app.disable('x-powered-by')`.
+- `app.js:L28-L29` — unknown email and wrong password return the same 401 body, but the unknown-email path skips hashing, so response time can hint which emails are registered (more so with M2's slower hash); compare against a fixed dummy hash on that path. Signup's 409 (m1) also reveals registration — pick one enumeration policy for both.
+
+## Regression tests
+All eight tests fail against the current `app.js` and pass once the fixes above are applied — run with `node --test security.test.js` next to `app.js` and `db.js`. Test data uses fictitious `example.test` accounts.
+```javascript
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { openDb } = require('./db');
+const { createApp } = require('./app');
+
+async function start() {
+  const db = openDb();
+  const server = createApp(db).listen(0);
+  await new Promise((r) => server.once('listening', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, { token, body } = {}) => {
+    const res = await fetch(base + path, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        ...(token && { authorization: `Bearer ${token}` }),
+      },
+      body: body && JSON.stringify(body),
+    });
+    const text = await res.text();
+    let json;
+    try { json = JSON.parse(text); } catch { json = undefined; }
+    return { status: res.status, json, text };
+  };
+  const signupAndLogin = async (email, extra = {}) => {
+    await call('POST', '/signup', { body: { email, password: 'correct horse', ...extra } });
+    const { json } = await call('POST', '/login', { body: { email, password: 'correct horse' } });
+    return json.token;
+  };
+  return { db, server, call, signupAndLogin };
+}
+
+test('B1: a user cannot read another user\'s invoice (404, not 200)', async (t) => {
+  const { db, server, call, signupAndLogin } = await start();
+  t.after(() => server.close());
+  const alice = await signupAndLogin('alice@example.test');
+  const bob = await signupAndLogin('bob@example.test');
+  const aliceId = db.prepare('SELECT id FROM users WHERE email = ?').get('alice@example.test').id;
+  const inv = db.prepare('INSERT INTO invoices (owner_id, customer, amount_cents) VALUES (?, ?, ?)')
+    .run(aliceId, 'Acme', 1000);
+  const id = Number(inv.lastInsertRowid);
+
+  assert.equal((await call('GET', `/invoices/${id}`, { token: alice })).status, 200);
+  assert.equal((await call('GET', `/invoices/${id}`, { token: bob })).status, 404);
+});
+
+test('B2: search treats the term as data (apostrophe in a real name works, scoped to owner)', async (t) => {
+  const { db, server, call, signupAndLogin } = await start();
+  t.after(() => server.close());
+  const alice = await signupAndLogin('alice@example.test');
+  await signupAndLogin('bob@example.test');
+  const ids = Object.fromEntries(db.prepare('SELECT email, id FROM users').all().map((u) => [u.email, u.id]));
+  const ins = db.prepare('INSERT INTO invoices (owner_id, customer, amount_cents) VALUES (?, ?, ?)');
+  ins.run(ids['alice@example.test'], "O'Brien Ltd", 500);
+  ins.run(ids['bob@example.test'], "O'Brien Ltd", 700);
+
+  const res = await call('GET', `/invoices?q=${encodeURIComponent("O'Brien")}`, { token: alice });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json.map((r) => r.amount_cents), [500]);
+});
+
+test('B3: signup ignores a client-supplied role', async (t) => {
+  const { db, server, call } = await start();
+  t.after(() => server.close());
+  await call('POST', '/signup', { body: { email: 'eve@example.test', password: 'pw123456', role: 'admin' } });
+  const row = db.prepare('SELECT role FROM users WHERE email = ?').get('eve@example.test');
+  assert.equal(row.role, 'user');
+});
+
+test('M1: /me never returns the password hash', async (t) => {
+  const { server, call, signupAndLogin } = await start();
+  t.after(() => server.close());
+  const token = await signupAndLogin('alice@example.test');
+  const res = await call('GET', '/me', { token });
+  assert.equal(res.status, 200);
+  assert.equal(res.json.email, 'alice@example.test');
+  assert.ok(!('password_hash' in res.json));
+});
+
+test('M2: password hashes are salted (same password -> different stored values) and still verify', async (t) => {
+  const { db, server, signupAndLogin } = await start();
+  t.after(() => server.close());
+  const token = await signupAndLogin('a@example.test');
+  await signupAndLogin('b@example.test');
+  assert.ok(token, 'login with the correct password still works');
+  const [a, b] = db.prepare('SELECT password_hash FROM users ORDER BY id').all();
+  assert.notEqual(a.password_hash, b.password_hash);
+});
+
+test('M3: login does not write the password to logs', async (t) => {
+  const { server, call } = await start();
+  t.after(() => server.close());
+  await call('POST', '/signup', { body: { email: 'alice@example.test', password: 'correct horse' } });
+  const logged = [];
+  t.mock.method(console, 'log', (...args) => logged.push(JSON.stringify(args)));
+  await call('POST', '/login', { body: { email: 'alice@example.test', password: 'correct horse' } });
+  assert.ok(logged.length > 0, 'login attempts are still logged');
+  assert.ok(logged.every((line) => !line.includes('correct horse')));
+});
+
+test('m1: missing credentials get a 400 JSON error, not a 500 stack trace', async (t) => {
+  const { server, call } = await start();
+  t.after(() => server.close());
+  const res = await call('POST', '/signup', { body: { email: 'alice@example.test' } });
+  assert.equal(res.status, 400);
+  assert.ok(res.json && res.json.error, 'JSON error body, not an HTML error page');
+});
+
+test('m1: a duplicate email gets a 409 JSON error, not a 500 stack trace', async (t) => {
+  const { server, call } = await start();
+  t.after(() => server.close());
+  const body = { email: 'alice@example.test', password: 'correct horse' };
+  assert.equal((await call('POST', '/signup', { body })).status, 201);
+  const res = await call('POST', '/signup', { body });
+  assert.equal(res.status, 409);
+  assert.ok(res.json && res.json.error, 'JSON error body, not an HTML error page');
 });
 ```
 
-### 🔴 HIGH: Full User Object Returned in Response
-**Location**: Line 10
-**Description**: `res.json({ token, user })` returns the entire DB row including
-password hash, internal IDs, and any other fields.
-**Fix**:
-```javascript
-const { password_hash, ...safeUser } = user;
-res.json({ token, user: safeUser });
-// Better: explicitly whitelist fields
-res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
-```
+## Questions
+- Are there existing users in production? If so, M2 needs a migration path — e.g., on a successful login against a legacy SHA-256 hash, re-hash with scrypt, or force a password reset — otherwise the fix locks them out.
+- Is `/login` behind a gateway or WAF that rate-limits by client and account? That decides whether m2 stays MINOR.
+- Is `NODE_ENV=production` set in every deployed environment? It limits m1 to non-production.
+- Which roles exist besides `'user'`, and who is allowed to grant them? B3's fix needs an admin-only path for that.
 
-### 🟡 MEDIUM: No Rate Limiting
-**Description**: Endpoint accepts unlimited login attempts — trivially brute-forced.
-**Fix**: Add rate limiting middleware:
-```javascript
-const rateLimit = require('express-rate-limit');
-const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
-app.post('/api/login', loginLimiter, async (req, res) => { ... });
-```
+## Checked OK
+- Session tokens: 32 bytes from `crypto.randomBytes` (L32), sent in a header.
+- Other queries (L15, L21, L28, L49) use bound parameters.
+- CSRF: authentication is a bearer header, not a cookie, so browsers do not attach it cross-site.
+- XSS: JSON-only API; no HTML rendering in scope.
+- SSRF, deserialization, path traversal: no outbound requests, no deserializer besides `express.json()`, no file-system access.
 
-### 🟡 MEDIUM: JWT Has No Expiration
-**Location**: Line 9
-**Description**: Token never expires — stolen tokens are valid forever.
-**Fix**: Add `expiresIn: '24h'` to jwt.sign options (shown above).
+## Not assessed
+- Dependency risk: no `package.json` or lock file provided; run `npm audit` in the project.
+- Security headers / CORS: no CORS or header configuration is shown; check where the API is served from and what fronts it.
+- Secrets: none present in the two files; configuration and deployment files were not provided.
 
-### 🟢 LOW: Timing Attack on Username Lookup
-**Description**: Failed username lookup returns faster than failed password check,
-allowing username enumeration via response time.
-**Fix**: Always run bcrypt.compare even when user not found (dummy hash).
-
-## Hardening Checklist
-- [ ] Parameterized queries — eliminates SQL injection
-- [ ] bcrypt for password storage and comparison
-- [ ] JWT_SECRET from environment variable, minimum 32 chars
-- [ ] JWT expiration set (24h access token)
-- [ ] Rate limiting on login (10 attempts / 15 min)
-- [ ] Only return whitelisted user fields in response
-- [ ] Add login attempt logging for security monitoring
-
-## Summary
-- **Critical**: 4 — Must fix before any production deployment
-- **Medium**: 2 — Fix before public launch
-- **Low**: 1 — Fix in next security hardening cycle
-
-This endpoint in its current form would be compromised within minutes of going live.
+## What's good
+- Most queries already use bound parameters — B2 is the odd one out, so the fix matches the existing style.
+- Tokens come from a CSPRNG and travel in the `Authorization` header rather than the URL.
+- Invoice queries already list explicit columns; `/me` is the only `SELECT *`.

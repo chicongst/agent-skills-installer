@@ -1,0 +1,278 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Skill Level Ladder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#F4F5F2; --surface:#FFFFFF; --ink:#1C211F; --muted:#59615D; --line:#DCE1DD; --soft:#EBEEEA;
+  --accent:#2F5D50; --accent-ink:#FFFFFF;
+  --jr:#4F6B7C; --md:#2F6F55; --sr:#9A5F1E; --st:#74416F;
+  --jr-bg:#E9EFF2; --md-bg:#E6F1EB; --sr-bg:#F6EDE2; --st-bg:#F2E8F1;
+  --sans:"IBM Plex Sans",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --cond:"IBM Plex Sans Condensed","Arial Narrow","IBM Plex Sans",Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#141816; --surface:#1B201E; --ink:#E6EAE7; --muted:#A3ACA7; --line:#2E3532; --soft:#232926;
+    --accent:#8FC4B2; --accent-ink:#10201A;
+    --jr:#9DB9CB; --md:#8CCBAE; --sr:#E2B27A; --st:#D6A3D0;
+    --jr-bg:#1E2A31; --md-bg:#1C2B24; --sr-bg:#2F261B; --st-bg:#2C202B;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#141816; --surface:#1B201E; --ink:#E6EAE7; --muted:#A3ACA7; --line:#2E3532; --soft:#232926;
+  --accent:#8FC4B2; --accent-ink:#10201A;
+  --jr:#9DB9CB; --md:#8CCBAE; --sr:#E2B27A; --st:#D6A3D0;
+  --jr-bg:#1E2A31; --md-bg:#1C2B24; --sr-bg:#2F261B; --st-bg:#2C202B;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:15px/1.55 var(--sans)}
+.wrap{max-width:1480px;margin:0 auto;padding-inline:clamp(16px,3vw,40px);padding-block:32px 64px}
+header.top{display:grid;gap:12px;margin-bottom:24px}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font:700 clamp(28px,4vw,44px)/1.1 var(--cond);margin:0;text-wrap:balance;letter-spacing:-.01em}
+.lede{max-width:68ch;color:var(--muted);margin:0}
+
+.ladder{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:8px 0 24px}
+.rung{background:var(--surface);border:1px solid var(--line);border-top:4px solid var(--c);border-radius:6px;padding:12px 14px;display:grid;gap:4px}
+.rung b{font:600 16px/1.2 var(--cond);color:var(--c)}
+.rung span{color:var(--muted);font-size:13.5px}
+.rung small{font:500 11.5px/1.3 var(--mono);color:var(--muted);letter-spacing:.02em}
+
+.tools{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--ground);padding-block:10px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.tools input[type=search]{flex:1 1 240px;min-width:0;font:inherit;padding:8px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}
+.tools input[type=search]:focus-visible,.chip:focus-visible,.lv:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip,.lv{font:500 13px/1 var(--sans);padding:7px 11px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+.chip[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.lv{border-color:var(--c);color:var(--c)}
+.lv[aria-pressed=false]{opacity:.45;text-decoration:line-through}
+.count{font:500 12px/1 var(--mono);color:var(--muted);margin-left:auto}
+
+.grid-head,.row{display:grid;grid-template-columns:minmax(190px,1.05fr) repeat(var(--n,4),minmax(0,1fr));gap:0}
+.grid-head{margin-top:16px;border-bottom:2px solid var(--ink)}
+.grid-head div{font:600 13px/1 var(--cond);text-transform:uppercase;letter-spacing:.08em;padding:10px 12px;color:var(--c,var(--muted))}
+.group-title{font:600 13px/1 var(--mono);text-transform:uppercase;letter-spacing:.1em;color:var(--accent);padding:26px 0 8px;border-bottom:1px solid var(--line)}
+.row{border-bottom:1px solid var(--line);background:var(--surface)}
+.skill{padding:14px 12px;border-right:1px solid var(--line);display:grid;align-content:start;gap:6px}
+.skill code{font:600 14px/1.2 var(--mono);color:var(--ink)}
+.skill p{margin:0;font-size:13px;color:var(--muted)}
+.skill .n{font:500 11px/1 var(--mono);color:var(--muted)}
+.cell{padding:12px 12px 14px;border-right:1px solid var(--line);background:var(--bg)}
+.cell:last-child{border-right:0}
+.cell .tag{display:none;font:600 12px/1 var(--cond);text-transform:uppercase;letter-spacing:.08em;color:var(--c);margin-bottom:6px}
+.cell ul{margin:0;padding-left:16px;display:grid;gap:3px}
+.cell li{font-size:13.5px;line-height:1.45}
+.cell li::marker{color:var(--c)}
+.cell li code{font:500 12.5px/1 var(--mono);background:var(--soft);padding:1px 4px;border-radius:3px}
+mark{background:color-mix(in srgb,var(--accent) 25%,transparent);color:inherit;border-radius:2px}
+.empty{padding:40px 0;color:var(--muted);text-align:center}
+.jr{--c:var(--jr);--bg:var(--jr-bg)} .md{--c:var(--md);--bg:var(--md-bg)} .sr{--c:var(--sr);--bg:var(--sr-bg)} .st{--c:var(--st);--bg:var(--st-bg)}
+footer{margin-top:32px;color:var(--muted);font-size:13px;max-width:80ch}
+
+@media (max-width:980px){
+  .ladder{grid-template-columns:repeat(2,1fr)}
+  .grid-head{display:none}
+  .row{grid-template-columns:1fr;border:1px solid var(--line);border-radius:6px;margin-top:12px;overflow:hidden}
+  .skill{border-right:0;border-bottom:1px solid var(--line)}
+  .cell{border-right:0;border-bottom:1px solid var(--line)}
+  .cell:last-child{border-bottom:0}
+  .cell .tag{display:block}
+  .count{margin-left:0;width:100%}
+}
+@media (max-width:480px){.ladder{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="eyebrow">agent-skills-installer · 23 skills · 4 levels</div>
+    <h1>Thang năng lực theo từng skill</h1>
+    <p class="lede">Với mỗi skill trong repo, bảng liệt kê những gì một kỹ sư ở từng level làm được và chịu trách nhiệm. Mỗi level bao gồm toàn bộ level dưới nó; các gạch đầu dòng chỉ ghi phần mới thêm.</p>
+  </header>
+
+  <section class="ladder" aria-label="Định nghĩa level">
+    <div class="rung jr"><b>Junior</b><span>Làm đúng task được giao, có hướng dẫn. Biết khi nào cần hỏi.</span><small>Phạm vi: task · hàm · file</small></div>
+    <div class="rung md"><b>Middle</b><span>Tự chủ một feature hoặc module từ đầu đến cuối, ít cần review về hướng đi.</span><small>Phạm vi: feature · module</small></div>
+    <div class="rung sr"><b>Senior</b><span>Sở hữu một hệ thống, lường trước rủi ro, ra quyết định tradeoff và dẫn dắt người khác.</span><small>Phạm vi: service · hệ thống · team</small></div>
+    <div class="rung st"><b>Staff</b><span>Định hướng kỹ thuật cho nhiều team, đặt chuẩn và giải quyết vấn đề xuyên tổ chức.</span><small>Phạm vi: nhiều team · org</small></div>
+  </section>
+
+  <div class="tools" role="toolbar" aria-label="Lọc">
+    <input id="q" type="search" placeholder="Tìm skill hoặc nội dung, ví dụ: idempotency, RLS, burn-rate" aria-label="Tìm kiếm">
+    <div class="chips" id="groups"></div>
+    <div class="chips" id="levels"></div>
+    <div class="count" id="count"></div>
+  </div>
+
+  <div class="grid-head" id="head"></div>
+  <main id="list"></main>
+
+  <footer>Nội dung bám theo phạm vi của từng SKILL.md trong repo sau đợt nâng cấp (commit <code>4021ed1</code>). Level là mô tả năng lực điển hình, không phải checklist bắt buộc: một người có thể ở Senior với skill này và Middle với skill khác.</footer>
+</div>
+
+<script>
+const LEVELS=[["jr","Junior"],["md","Middle"],["sr","Senior"],["st","Staff"]];
+const GROUPS=["Thiết kế","Viết code","Review","Debug & vận hành","Tài liệu"];
+const S=[
+{id:"architect",g:"Thiết kế",d:"Kiến trúc hệ thống, ranh giới, luồng dữ liệu, tradeoff, rollout.",L:[
+["Vẽ được sơ đồ component của hệ thống đang làm","Hiểu client–server, REST, DB, cache, queue ở mức khái niệm","Thiết kế feature nhỏ trong một service theo pattern có sẵn","Liệt kê input, output và dependency của feature","Hỏi lại khi requirement mơ hồ thay vì tự đoán","Không tự thêm công nghệ mới khi chưa hỏi"],
+["Thiết kế trọn một service/module: API, data model, luồng dữ liệu","Quy đổi requirement ra số: QPS, dung lượng, latency","Đưa 2–3 phương án và so sánh tradeoff","Chọn sync hay async (queue) có lý do","Xử lý lỗi cơ bản: timeout, retry có giới hạn, idempotency","Thêm log và metric cho luồng chính","Viết design doc ngắn có kế hoạch rollout"],
+["Chia ranh giới service theo domain","Sizing theo SLO và tốc độ drain, không theo peak đầu vào","Không dual write: dùng outbox, CDC hoặc saga","Tuyên bố rõ ngữ nghĩa giao nhận: at-least-once + dedupe key","Liệt kê failure mode: backpressure, bulkhead, circuit breaker, DLQ có owner","Phân biệt quyết định one-way door và two-way door","Nêu breakpoint: tín hiệu đo được buộc sang bước kiến trúc tiếp theo","Rollout theo phase, mỗi phase có gate và rollback","Ước chi phí bằng billable quantity, không bằng cảm giác","Luôn có phương án “mở rộng hệ thống hiện tại”"],
+["Định hướng kiến trúc nhiều năm cho nhiều team","Xây paved road, platform dùng chung, tech radar","Viết RFC/ADR dẫn tới đồng thuận giữa các team","Quyết định build, buy hay mở rộng hệ thống cũ","Tìm rủi ro xuyên team: coupling, single point of failure","Cân tech debt với roadmap kinh doanh","Chịu trách nhiệm các quyết định one-way door quy mô công ty","Mentor senior về tư duy tradeoff"]]},
+{id:"api-design",g:"Thiết kế",d:"Resource, contract, lỗi, idempotency, versioning.",L:[
+["Dùng đúng HTTP method và status cơ bản: 200, 201, 400, 404, 500","Đặt tên resource là danh từ số nhiều","JSON response nhất quán","Validate trường bắt buộc","Đọc và làm theo convention API sẵn có","Viết request/response mẫu"],
+["Thiết kế CRUD kèm filter và sort","Chọn một kiểu pagination cho toàn API, ưu tiên cursor cho list lớn","Phân biệt 400 (sai cú pháp) và 422 (sai ngữ nghĩa), 401 và 403","Một error format thống nhất: RFC 9457 problem+json","PATCH bằng JSON Merge Patch","Trả 201 kèm Location khi tạo mới","Kiểm tra quyền trên từng object để chống IDOR"],
+["Idempotency-Key cho POST: request lặp, request đang chạy, payload khác","Optimistic concurrency: ETag + If-Match, trả 412/428","Rate limit: 429 + Retry-After","Phân loại thay đổi breaking và non-breaking","Deprecation (RFC 9745) và Sunset (RFC 8594) có lịch cụ thể","Thiết kế theo consumer thật: mobile, partner, khả năng buộc upgrade","Review API của người khác, finding có severity"],
+["Viết API guideline chung cho cả org","Governance: lint OpenAPI, versioning policy, review board","Thiết kế public/partner API sống nhiều năm","Chọn giao thức theo bài toán: REST, gRPC, GraphQL, event","Dẫn migration khi đổi contract lớn","Đo mức sử dụng để quyết định khai tử endpoint","Cân DX với bảo mật và chi phí vận hành"]]},
+{id:"db-design",g:"Thiết kế",d:"Schema, khoá, constraint, multi-tenant, index từ query.",L:[
+["Tạo bảng với primary key, foreign key","Chọn kiểu dữ liệu đúng, không lưu tiền bằng float","Viết JOIN, WHERE, GROUP BY đúng","Biết index làm query nhanh hơn","Liệt kê cột cụ thể thay vì SELECT *","Dùng migration tool của project"],
+["Chuẩn hoá tới 3NF, biết khi nào denormalize","Đủ constraint: NOT NULL, UNIQUE, CHECK, FK","FK column không tự có index: tạo khi cần","Tạo index từ query thật, đúng thứ tự cột composite","Đọc EXPLAIN: seq scan hay index scan","Keyset pagination thay OFFSET","Dùng timestamptz; chọn bigint hay UUID có lý do"],
+["Cách ly tenant: composite FK chứa org_id + RLS","Biết RLS bị bỏ qua với owner/superuser","Partial, expression, covering index","Đọc plan: hash, merge, nested loop; estimate và actual","Thiết kế evolution: expand–contract, NOT VALID rồi VALIDATE","Partition, materialized view khi requirement buộc","Kiểm chứng bằng DDL chạy thật và dữ liệu mẫu","Chuyển rollout sang migration-safety"],
+["Chiến lược dữ liệu org: OLTP, OLAP, retention, archive","Chọn engine theo workload: relational, document, time-series","Sharding, replication, multi-region, RPO/RTO","Governance: PII, xoá dữ liệu theo GDPR, audit","Chuẩn schema và naming dùng chung","Capacity planning nhiều năm","Review thiết kế DB của nhiều team"]]},
+{id:"ui-design",g:"Thiết kế",d:"Token, palette sáng/tối, typography, a11y, Core Web Vitals.",L:[
+["Dùng component và token có sẵn","Spacing và cỡ chữ theo scale","Responsive bằng flex/grid","alt cho ảnh, label cho input","Có hover và focus state","Không bỏ focus outline"],
+["Tìm design system của project trước khi tự chọn màu","Tính contrast WCAG AA: 4.5:1 cho text, 3:1 cho UI","Đủ state: loading, empty, error, disabled","Semantic HTML, landmark, dùng được bằng bàn phím","Dark mode theo prefers-color-scheme, override không bị flash","Hero image dùng fetchpriority=\"high\", không lazy; ảnh dưới fold mới lazy","Target size tối thiểu 24×24"],
+["Thiết kế token system: primitive → semantic","Core Web Vitals LCP, INP, CLS đo ở p75","A11y sâu: screen reader, ARIA đúng chỗ, reduced motion","Xử lý khi màu brand fail contrast: giữ và báo cặp lỗi","Layout dày dữ liệu: dashboard, bảng lớn","SEO kỹ thuật: meta, Open Graph, canonical, noindex cho staging","Không dựa vào màu để truyền trạng thái"],
+["Sở hữu design system cho nhiều sản phẩm","Versioning và governance của component library","Chuẩn accessibility và audit định kỳ","Performance budget cho frontend","Theming đa brand, i18n, RTL","Đo tác động UX bằng dữ liệu","Phối hợp design, engineering và a11y ở quy mô org"]]},
+{id:"mastery",g:"Viết code",d:"Chuẩn mực kỹ sư senior áp dụng khi viết code.",L:[
+["Code chạy đúng yêu cầu","Tên biến, hàm rõ nghĩa","Hàm ngắn, làm một việc","Không nuốt exception","Theo convention của project","Không để import thừa, code chết"],
+["Guard clause và early return","Catch-all chỉ ở boundary trên cùng","Validate ở trust boundary","Query có giới hạn, không N+1","Timeout cho mọi network call","Thời gian lưu UTC, dùng kiểu timezone-aware","Log ID thay vì PII","Inject dependency và clock để test được"],
+["Retry chỉ cho thao tác idempotent","Atomic update để chống race: UPDATE … WHERE qty > 0","Tách behavior change khỏi restructure","Nhường skill chuyên biệt và convention project khi có","Không sửa lan man ngoài phạm vi task","Ghi assumption ngắn sau code","Chống over-engineering: YAGNI, rule of three"],
+["Đặt engineering standards cho cả org","Viết CLAUDE.md/guideline cho người và AI dùng chung","Chọn default an toàn: lint, analyzer, template dự án","Cân tốc độ ship với chất lượng","Mentor về judgement, không chỉ luật","Đo chất lượng qua incident, defect, lead time"]]},
+{id:"refactor",g:"Viết code",d:"Đổi cấu trúc code mà không đổi hành vi (ngôn ngữ ngoài .NET).",L:[
+["Đổi tên cho rõ nghĩa","Extract method nhỏ","Xoá code chết khi chắc chắn không dùng","Chạy test trước và sau khi sửa","Dùng refactor tự động của IDE"],
+["Nhận diện smell: duplication, long method, deep nesting, repeated expression","Một smell, một move, một commit","Viết characterization test cho code chưa có test","Biết pagination, transaction, đổi message lỗi là behavior change","Theo layout thư mục sẵn có","Commit nhỏ để revert dễ"],
+["Phân loại rủi ro SAFE, RISKY, DANGEROUS","So sánh output cũ và mới trên cùng input để chứng minh tương đương","Tránh abstraction sớm; không extract đoạn dùng một lần dưới ~5 dòng","Code auth, validation, tiền luôn là RISKY","Báo behavior change riêng kèm severity, không lẳng lặng sửa","Undo bước lỗi bằng revert hoặc stash, không reset --hard","Strangler fig cho module lớn"],
+["Kế hoạch trả tech debt nhiều quý","Refactor xuyên service, API, schema bằng expand–contract","Codemod quy mô lớn","Ưu tiên theo chi phí và rủi ro kinh doanh","Guardrail: coverage, analyzer, architecture test","Thuyết phục stakeholder đầu tư refactor"]]},
+{id:"dotnet-code-refactor",g:"Viết code",d:"Refactor C#/.NET an toàn, giữ nguyên hành vi.",L:[
+["Rename, extract bằng Rider hoặc Visual Studio","Chạy dotnet build và dotnet test sau mỗi bước","Không thêm #pragma để tắt warning","Hiểu async/await cơ bản"],
+["Guard clause, pattern matching, switch expression","Chuyển config[...] rải rác sang IOptions<T>","Value object bằng readonly record struct","Characterization test bằng xUnit","dotnet format theo .editorconfig","Không đưa .Result hoặc .Wait() vào code"],
+["Bẫy LINQ: deferred execution, multiple enumeration","Switch expression thiếu case ném SwitchExpressionException (CS8509/CS8524)","class → record đổi equality; không đổi EF entity sang record","EF Core: Expression và Func, so ToQueryString() trước/sau","DI lifetime: captive dependency, ai dispose sau khi chuyển new sang DI","throw; giữ stack, throw ex; mất stack","Biết SQLite test che bug async timing","sync → async chỉ với method private/internal"],
+["Hiện đại hoá .NET Framework lên .NET 8+","Chuẩn analyzer, nullable, TreatWarningsAsErrors cho solution","Tách monolith .NET theo domain","Central package management, build performance","Guideline .NET chung cho org","Upgrade EF Core và ASP.NET Core nhiều bước"]]},
+{id:"test-writer",g:"Viết code",d:"Test plan và test code, expected value suy ra từ spec.",L:[
+["Viết unit test cho happy path","Arrange, Act, Assert","Một test một hành vi","Tên test mô tả hành vi","Chạy test và đọc output","Không commit test đang skip"],
+["Boundary, null, rỗng, số âm, lỗi","Tính expected value bằng tay từ spec, không copy từ output","Mock I/O, không mock logic","Test tham số hoá","Integration test với DB thật, rollback mỗi test","Đóng băng thời gian: freezegun, jest.useFakeTimers, clock inject","Regression test cho mỗi bug"],
+["Phát hiện nhánh hoặc cap không bao giờ chạm tới","Hiểu line coverage che giấu gì","xfail(strict) gắn với finding khi code lệch spec","Test concurrency, retry, idempotency","Contract test giữa các service","Property-based test","Loại flaky test tận gốc"],
+["Chiến lược test cho org và ngân sách thời gian CI","Hạ tầng test: container, dữ liệu mẫu, môi trường ephemeral","Metrics: flaky rate, thời gian CI, defect lọt","Mutation testing cho code quan trọng","Chọn test gì theo rủi ro kinh doanh","Chuẩn test dùng chung"]]},
+{id:"algorithm-review",g:"Viết code",d:"Độ phức tạp, cấu trúc dữ liệu, rewrite giữ nguyên hành vi.",L:[
+["Tính Big-O cho vòng lặp đơn và lồng","Biết list lookup O(n), dict/set O(1) kỳ vọng","Dùng sort có sẵn","Nhận ra truy vấn DB trong vòng lặp"],
+["Dùng đúng hash map, set, heap, deque","Two pointers, sliding window, prefix sum, binary search","Hỏi scale trước khi tối ưu","Edge case: trùng lặp, key thiếu, input rỗng, thứ tự","Chi phí ẩn: slice, nối chuỗi, sort trong vòng lặp"],
+["Nói chính xác: expected, amortized, kích thước output","Chạy old và new trên input ngẫu nhiên + edge case để chứng minh tương đương","Graph: BFS/DFS, Dijkstra chỉ với trọng số không âm, union-find","Input không tin cậy + độ phức tạp siêu tuyến tính = algorithmic DoS","Stable sort, tie order, sai số float","Không tối ưu khi code đã đủ nhanh"],
+["Chọn cấu trúc cho hệ thống lớn: index, cache, Bloom filter, HyperLogLog","External sort, streaming khi dữ liệu không vừa RAM","Thuật toán phân tán, chọn sharding key","Review thuật toán lõi của sản phẩm","Đặt ngân sách độ phức tạp cho API public"]]},
+{id:"code-review",g:"Review",d:"Review một đoạn code (ngoài .NET): bug, edge case, maintainability.",L:[
+["Đọc diff, hiểu thay đổi","Bắt lỗi rõ: null, off-by-one, typo","Kiểm tra naming theo convention","Hỏi khi không hiểu","Góp ý cụ thể, lịch sự"],
+["Review theo checklist: correctness, edge case, error handling, test","Severity: BLOCKER, MAJOR, MINOR, NIT","Mỗi finding có file:line và cách sửa","Bắt SQL injection, N+1, check-then-act race","Kiểm tra test có thật sự bắt được bug","Không lặp lại điều linter đã bắt"],
+["Độ sâu review theo blast radius","Tái hiện bug trước khi gắn BLOCKER, tag [verified]","Soi LLM slop: test bị skip, warning bị tắt, catch rỗng","Verdict khớp severity: có MAJOR là REQUEST CHANGES","Gộp finding cùng root cause","Tiền dùng số nguyên, không float","Câu hỏi thiết kế tách khỏi finding"],
+["Văn hoá review: SLA, kích thước PR, tiêu chí approve","Review thay đổi rủi ro cao xuyên team","Tự động hoá phần máy làm được","Mentor reviewer","Sửa lỗi lặp lại tại gốc: lint rule, template"]]},
+{id:"pr-review",g:"Review",d:"Mức sẵn sàng merge của một change set.",L:[
+["Đọc mô tả PR và chạy thử","Kiểm tra CI xanh","Kiểm tra PR làm đúng ticket","Để lại câu hỏi rõ ràng"],
+["Đánh giá scope và kích thước PR","Test có phủ thay đổi","Tìm thay đổi ẩn: config, dependency, migration","Mô tả PR đủ để người khác hiểu","Verdict có lý do"],
+["Hỏi: test có fail nếu revert thay đổi không?","Phát hiện thay đổi client/config dùng chung ảnh hưởng module khác","Đánh giá rollout: flag, migration, backward compatibility","Fail open hay fail closed có chủ đích","Tách PR lớn thành chuỗi PR nhỏ","Merge checklist; câu hỏi tách khỏi finding"],
+["Chính sách merge: CODEOWNERS, branch protection, required reviewer","Review PR chạm nhiều hệ thống","PR template và chuẩn mô tả","Giảm lead time review toàn org","Quy trình cho thay đổi khẩn cấp"]]},
+{id:"code-audit",g:"Review",d:"Audit 20 chiều có chấm điểm và kế hoạch hành động.",L:[
+["Chạy linter, đọc báo cáo","Liệt kê vấn đề dễ thấy: naming, duplication","Biết định nghĩa SOLID"],
+["Đánh giá nhiều chiều: error handling, validation, logging, test","Chấm điểm kèm bằng chứng file:line","Nhận ra vi phạm SOLID thực tế","Đề xuất fix cụ thể"],
+["Đủ 20 chiều: kiến trúc, DI, async, DB, API, domain…","Rubric nhất quán; có BLOCKER thì điểm tối đa 4","Tái hiện lỗi nguy hiểm, tag [verified]","Phân biệt N/A và “not assessed”","Action plan ưu tiên theo rủi ro"],
+["Audit cả codebase hoặc portfolio nhiều team","Biến kết quả thành roadmap đầu tư","Theo dõi xu hướng chất lượng theo thời gian","Chuẩn audit dùng chung","Trình bày cho lãnh đạo không kỹ thuật"]]},
+{id:"dotnet-code-review",g:"Review",d:"Review C#/.NET: async, DI, EF Core, ASP.NET Core.",L:[
+["Nhận ra async void, .Result, .Wait()","Dùng using/await using để dispose","Bắt null reference cơ bản","Đọc warning của compiler"],
+["Truyền CancellationToken xuống","IHttpClientFactory thay vì new HttpClient","EF Core: N+1, AsNoTracking, ToList() trước Where","[Authorize], validation, ProblemDetails","Log bằng message template, không interpolation (CA2254)","throw; thay vì throw ex;"],
+["Captive dependency, DbContext không thread-safe","Slop .NET: [Fact(Skip=…)], #pragma, <NoWarn>, lạm dụng !","Over-posting, IDOR, antiforgery đúng loại app","ConfigureAwait(false) chỉ trong library","ExecuteUpdate/ExecuteDelete thay SaveChanges trong vòng lặp","Bằng chứng từ dotnet build, test, list package --vulnerable","Verdict khớp severity"],
+["Chuẩn review .NET: analyzer, ruleset, Directory.Build.props","Review kiến trúc ASP.NET Core nhiều service","Chiến lược nullable, trimming, Native AOT","Tối ưu allocation, Span, pooling khi đo được là cần","Mentor về runtime .NET"]]},
+{id:"security-review",g:"Review",d:"Trust boundary, secret, input validation, abuse case.",L:[
+["Không hardcode secret","Parameterized query","Hash mật khẩu bằng bcrypt hoặc argon2","Chỉ dùng HTTPS","Validate input"],
+["OWASP Top 10: injection, XSS, CSRF, broken access control","Kiểm tra authz trên từng object (IDOR)","Secret từ vault hoặc env, có xoay vòng","Không log dữ liệu nhạy cảm","Quét dependency có lỗ hổng"],
+["SSRF, insecure deserialization, path traversal, mass assignment","Threat modeling theo trust boundary","Chứng minh khả năng khai thác trong môi trường test","Rate limit, lockout chống brute force","JWT và session: hết hạn, xoay khoá","Severity theo khả năng khai thác"],
+["Chương trình AppSec: SDL, security champion","Threat model hệ thống lớn","Security incident response, responsible disclosure","Supply chain: SBOM, ký artifact","Compliance: SOC 2, ISO 27001, PCI DSS","Cân rủi ro với chi phí kinh doanh"]]},
+{id:"performance-review",g:"Review",d:"Đo trước, tìm bottleneck, fix có nhãn rủi ro.",L:[
+["Đo trước khi tối ưu","Đọc thời gian request trong log","Nhận ra query chậm rõ ràng","Dùng profiler cơ bản"],
+["p50, p95, p99 thay cho trung bình","Đọc EXPLAIN ANALYZE","Index đúng query","Cache có TTL và invalidation","Mỗi lần đổi một thứ, rồi đo lại","Load test cơ bản"],
+["Quy trình: baseline, profile, giả thuyết, đổi, đo lại cùng tải","Load test constant arrival rate thay vì closed-loop","Little's law để tính pool và worker","Nhãn rủi ro rollout: rewrite bảng, lock, backfill theo batch","Chỉ ra fix làm đổi ngữ nghĩa, ví dụ ILIKE → FTS","Giải thích chênh lệch staging và production","Không bịa số; số chưa đo ghi là estimate"],
+["Performance budget và SLO cho sản phẩm","Capacity planning","Observability: tracing, continuous profiling","Cân chi phí hạ tầng với latency","Regression gate hiệu năng trong CI","Dẫn dắt dự án hiệu năng xuyên team"]]},
+{id:"document-review",g:"Review",d:"Review tài liệu khắt khe: rõ, logic, nhất quán, làm theo được.",L:[
+["Bắt lỗi chính tả, format","Kiểm tra link và heading","Đánh dấu đoạn khó hiểu"],
+["Kiểm tra logic, thuật ngữ nhất quán","Tìm thông tin còn thiếu cho người đọc","Góp ý có severity","Thử lệnh và ví dụ trong doc"],
+["Đọc như người ngoài cuộc","Tìm assumption ngầm, mâu thuẫn giữa các phần","Đánh giá người đọc có hành động được không","Verdict mức sẵn sàng","Không bịa dữ kiện khi góp ý"],
+["Chuẩn RFC, PRD, design doc cho org","Review tài liệu chiến lược và quyết định lớn","Đảm bảo doc phục vụ việc ra quyết định","Xây văn hoá viết rõ, ngắn"]]},
+{id:"debug",g:"Debug & vận hành",d:"Lỗi đã tái hiện được: loại giả thuyết bằng thí nghiệm.",L:[
+["Đọc stack trace","Tái hiện theo bước user mô tả","Thêm log để quan sát","Dùng breakpoint","Hỏi khi bế tắc quá lâu"],
+["Lập nhiều giả thuyết, loại từng cái","Mỗi thí nghiệm đổi một biến, dự đoán trước kết quả","So sánh môi trường: local và CI","Tách minimal reproduction","git bisect sau khi hỏi","Regression test fail trước fix, pass sau fix"],
+["Flaky: lặp N lần, đếm tỉ lệ; 0/N nghĩa là dưới ~3/N (rule of three)","Bug concurrency, timing, thứ tự test","Chứng minh root cause bằng bật/tắt lỗi","Debug production không làm hỏng dữ liệu","Tìm cùng pattern ở chỗ khác","Dừng và báo “chưa chứng minh” khi hết bằng chứng"],
+["Debug sự cố phân tán nhiều service","Xây công cụ observability cho team","Dạy phương pháp debug có hệ thống","Biến bài học thành guardrail: lint, test, alert"]]},
+{id:"fix-bug",g:"Debug & vận hành",d:"Điểm vào cho bug report ít thông tin.",L:[
+["Đọc error, tìm dòng lỗi","Sửa lỗi hiển nhiên rồi chạy lại","Hỏi user thông tin còn thiếu"],
+["Intake: stack trace, bước tái hiện, môi trường, thay đổi gần đây","Tự tìm trong code và git log trước khi hỏi","Root cause là sự thật, fix là thay đổi","Fix tối thiểu, đặt tại gốc","Regression test"],
+["Confidence High, Medium, Low; Low thì không sửa code","Trace data flow tới điểm lệch đầu tiên","Còn nhiều giả thuyết thì chuyển sang debug","Grep caller và pattern tương tự","Không tái hiện được thì không đoán fix"],
+["Quy trình triage bug cho org","Phân tích xu hướng bug để sửa ở quy trình, kiến trúc","SLA theo severity","Nối bug với incident và post-mortem"]]},
+{id:"sre-engineering",g:"Debug & vận hành",d:"Incident, SLO, error budget, burn-rate alert, post-mortem.",L:[
+["Làm theo runbook khi có alert","Đọc dashboard và log","Báo sự cố đúng kênh","Không tự thay đổi production"],
+["Phân loại severity, xác định impact","Mitigation nhanh: rollback, feature flag, scale","Status update định kỳ: đã biết, chưa biết, ai đang làm gì","Viết post-mortem blameless","Định nghĩa SLI cơ bản"],
+["Làm incident commander","SLO và error budget: 99.9% trong 30 ngày = 43.2 phút","Burn-rate alert nhiều cửa sổ: 14.4×, 6×, 1×","Chỉnh alert ồn, bổ sung alert thiếu","Tách trigger, root cause, contributing factor","Bảo vệ dữ liệu khi mitigate, ví dụ không retry thanh toán khi chưa chắc idempotent"],
+["Chiến lược reliability cho org","Chính sách error budget với product","Chaos engineering, game day","On-call bền vững: rotation, giảm toil","Kiến trúc chịu lỗi multi-region","MTTD, MTTR báo cáo cho lãnh đạo"]]},
+{id:"migration-safety",g:"Debug & vận hành",d:"Chạy thay đổi schema và dữ liệu an toàn trên production.",L:[
+["Dùng migration tool, không sửa DB bằng tay","Thêm cột nullable","Chạy thử migration ở local","Có backup trước khi chạy"],
+["Expand–contract","Backfill theo batch","CREATE INDEX CONCURRENTLY, ngoài transaction","Rollback cho từng bước","Code mới tương thích cả schema cũ và mới"],
+["Biết lock mode của từng DDL, cái nào rewrite bảng","lock_timeout và statement_timeout cho mọi DDL","NOT VALID rồi VALIDATE","SET NOT NULL không scan nhờ CHECK đã validate","Trigger phủ mọi write path, kể cả job ngoài repo","Xác định point of no return","Theo dõi lock queue, replica lag"],
+["Chính sách migration: review, cửa sổ chạy, công cụ","Migration lớn: đổi engine, tách DB, zero-downtime","Online schema change: gh-ost, pt-online-schema-change","Điều phối nhiều team dùng chung schema"]]},
+{id:"release-readiness",g:"Debug & vận hành",d:"Rủi ro release, rollout, rollback, go/no-go.",L:[
+["Kiểm tra CI xanh, test pass","Đọc release checklist","Biết cách rollback cơ bản"],
+["Checklist đủ: migration, config, flag, monitoring","Canary hoặc rolling deploy","Ngưỡng rollback cụ thể","Thông báo stakeholder"],
+["Verdict GO, GO WITH CONDITIONS, NO-GO","Bake time đủ để thấy tỉ lệ lỗi tăng gấp đôi","kubectl rollout undo không phục hồi ConfigMap","Không deploy sát sự kiện peak","Tín hiệu đúng/sai nghiệp vụ, không chỉ error rate","Rollback đã diễn tập; không drop cột code mới đã ghi"],
+["Chính sách release org: freeze, cadence, progressive delivery","Nền tảng feature flag, deploy tự động","Chỉ số DORA","Quyết định release rủi ro cao cùng business"]]},
+{id:"docs-writer",g:"Tài liệu",d:"README, how-to, API reference, ADR lấy dữ kiện từ code.",L:[
+["README cài đặt và chạy project","Lệnh copy-paste chạy được","Cập nhật doc khi đổi code"],
+["Chọn đúng loại doc: README, how-to, API reference, ADR","Mọi dữ kiện lấy từ code, không bịa","Chưa biết thì ghi [TODO: confirm …]","Chạy lại lệnh trong doc","Phần troubleshooting"],
+["API reference khớp hành vi thật: status, thứ tự kiểm tra","ADR: bối cảnh, phương án bị loại, hệ quả xấu","Viết theo đúng audience","Dòng Last verified; đồng bộ doc với code","Báo khi code và doc mâu thuẫn"],
+["Kiến trúc tài liệu org, docs-as-code","Chuẩn giọng văn và template","Đo hiệu quả doc: search, support ticket","Tài liệu onboarding"]]},
+{id:"changelog",g:"Tài liệu",d:"Changelog cho dev và release notes cho người dùng.",L:[
+["Liệt kê thay đổi từ commit","Nhóm Added, Fixed","Viết bằng ngôn ngữ người dùng"],
+["Keep a Changelog","Map conventional commit sang category","Đánh dấu breaking change","Link PR, issue","Bỏ thay đổi nội bộ khỏi release notes"],
+["SemVer: breaking → major, báo khi version lệch","Không bịa: thiếu thì ghi [UNKNOWN] và hỏi","Migration guide cho breaking change","Tách changelog dev và release notes user","Deprecation có lộ trình"],
+["Chính sách versioning và release notes cho org","Tự động hoá changelog từ PR label","Truyền thông thay đổi cho khách hàng, partner","Chính sách hỗ trợ phiên bản, LTS"]]}
+];
+
+const $=s=>document.querySelector(s);
+const state={q:"",group:"Tất cả",levels:[true,true,true,true]};
+try{const s=JSON.parse(localStorage.getItem("ladder")||"null");if(s){state.group=s.group||state.group;state.levels=s.levels||state.levels}}catch(e){}
+const save=()=>{try{localStorage.setItem("ladder",JSON.stringify({group:state.group,levels:state.levels}))}catch(e){}};
+const esc=t=>t.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function fmt(t,q){let h=esc(t);if(q){const re=new RegExp("("+q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+")","gi");h=h.replace(re,"<mark>$1</mark>")}return h}
+
+function chips(){
+  $("#groups").innerHTML=["Tất cả",...GROUPS].map(g=>`<button class="chip" type="button" aria-pressed="${g===state.group}" data-g="${g}">${g}</button>`).join("");
+  $("#levels").innerHTML=LEVELS.map(([k,n],i)=>`<button class="lv ${k}" type="button" aria-pressed="${state.levels[i]}" data-i="${i}">${n}</button>`).join("");
+}
+function render(){
+  const q=state.q.trim().toLowerCase();
+  const on=LEVELS.map((l,i)=>i).filter(i=>state.levels[i]);
+  document.documentElement.style.setProperty("--n",on.length||1);
+  $("#head").innerHTML=`<div>Skill</div>`+on.map(i=>`<div class="${LEVELS[i][0]}">${LEVELS[i][1]}</div>`).join("");
+  let html="",n=0;
+  for(const g of GROUPS){
+    if(state.group!=="Tất cả"&&state.group!==g)continue;
+    const rows=S.filter(s=>s.g===g).filter(s=>!q||(s.id+" "+s.d+" "+s.L.flat().join(" ")).toLowerCase().includes(q));
+    if(!rows.length)continue;
+    html+=`<div class="group-title">${g}</div>`;
+    for(const s of rows){
+      n++;
+      const cnt=s.L.reduce((a,l)=>a+l.length,0);
+      html+=`<article class="row" id="${s.id}"><div class="skill"><code>${fmt(s.id,q)}</code><p>${fmt(s.d,q)}</p><span class="n">${cnt} tiêu chí</span></div>`+
+        on.map(i=>`<div class="cell ${LEVELS[i][0]}"><div class="tag">${LEVELS[i][1]}</div><ul>${s.L[i].map(b=>`<li>${fmt(b,q)}</li>`).join("")}</ul></div>`).join("")+`</article>`;
+    }
+  }
+  $("#list").innerHTML=html||`<p class="empty">Không có skill nào khớp “${esc(state.q)}”. Thử từ khoá khác hoặc chọn nhóm “Tất cả”.</p>`;
+  const total=S.reduce((a,s)=>a+s.L.flat().length,0);
+  $("#count").textContent=`${n}/${S.length} skill · ${total} tiêu chí`;
+}
+$("#q").addEventListener("input",e=>{state.q=e.target.value;render()});
+$("#groups").addEventListener("click",e=>{const b=e.target.closest("[data-g]");if(!b)return;state.group=b.dataset.g;save();chips();render()});
+$("#levels").addEventListener("click",e=>{const b=e.target.closest("[data-i]");if(!b)return;const i=+b.dataset.i;if(state.levels.filter(Boolean).length===1&&state.levels[i])return;state.levels[i]=!state.levels[i];save();chips();render()});
+chips();render();
+if(location.hash){const el=document.getElementById(location.hash.slice(1));if(el)el.scrollIntoView()}
+</script>
