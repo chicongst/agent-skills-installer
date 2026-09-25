@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Use when reviewing code in any language except C#/.NET — a snippet, function, file, module, or diff — for bugs, correctness, edge cases, security and performance red flags, maintainability, and tests, including when the user pastes code and asks "any issues?", "is this OK?", "review this code". Single pass: severity-tagged findings with fixes and a verdict; does not edit code. Not for C#/.NET (use `dotnet-code-review`), merge readiness of a PR or change set (`pr-review`), a scored multi-dimension audit (`code-audit`), a deep security review (`security-review`), or applying fixes (`refactor`).
+description: "Use when reviewing code in any language except C#/.NET — a snippet, function, file, module, or diff — for bugs, correctness, edge cases, security and performance red flags, maintainability, and tests, including when the user pastes code and asks \"any issues?\", \"is this OK?\", \"review this code\". Single pass: severity-tagged findings with fixes and a verdict; does not edit code. Not for C#/.NET (use `dotnet-code-review`), merge readiness of a PR or change set (`pr-review`), a scored multi-dimension audit (`code-audit`), a deep security review (`security-review`), or applying fixes (`refactor`)."
 ---
 
 # Code Review

@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Use when deciding if a change set (PR URL, branch vs base, or pasted diff) is ready to merge — "review this PR", "is this ready to merge". Judges the change as a unit: scope, size, hidden changes, blast radius, tests, rollout/rollback, description, plus blocking defects in changed lines; ends in APPROVE / REQUEST CHANGES / NEEDS DISCUSSION. Not for code quality of a file or module outside a change set (use `code-review`, or `dotnet-code-review` for C#), a scorecard audit (`code-audit`), a whole release (`release-readiness`), or a migration deep-dive (`migration-safety`).
+description: "Use when deciding if a change set (PR URL, branch vs base, or pasted diff) is ready to merge — \"review this PR\", \"is this ready to merge\". Judges the change as a unit: scope, size, hidden changes, blast radius, tests, rollout/rollback, description, plus blocking defects in changed lines; ends in APPROVE / REQUEST CHANGES / NEEDS DISCUSSION. Not for code quality of a file or module outside a change set (use `code-review`, or `dotnet-code-review` for C#), a scorecard audit (`code-audit`), a whole release (`release-readiness`), or a migration deep-dive (`migration-safety`)."
 ---
 
 # PR Review

@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Use when a failure is already observable or reproducible (failing test, erroring command, triggerable wrong output, flaky failure you can loop) and you need the proven root cause — rank hypotheses, eliminate them with one-variable experiments, fix only what the evidence confirms. Triggers: "debug this", "find the root cause", "fails only in CI", "flaky test", "tìm root cause". Not for a low-context bug report (just an error or "it's not working") — use `fix-bug`; not for a live production incident — use `sre-engineering`; not for slowness alone — use `performance-review`.
+description: "Use when a failure is already observable or reproducible (failing test, erroring command, triggerable wrong output, flaky failure you can loop) and you need the proven root cause — rank hypotheses, eliminate them with one-variable experiments, fix only what the evidence confirms. Triggers: \"debug this\", \"find the root cause\", \"fails only in CI\", \"flaky test\", \"tìm root cause\". Not for a low-context bug report (just an error or \"it's not working\") — use `fix-bug`; not for a live production incident — use `sre-engineering`; not for slowness alone — use `performance-review`."
 ---
 
 # Debug

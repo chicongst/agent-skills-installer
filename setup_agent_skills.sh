@@ -13,6 +13,14 @@ WITHOUT_SUPPORT_FILES=0
 IMPORT_GITHUB=""
 IMPORT_DIR=""
 LIST_ONLY=0
+PRUNE_RETIRED=0
+IMPORT_TMP=""
+INSTALLED=0
+SKIPPED=0
+
+# Skills this repo used to ship under these names. Old installs keep them, and
+# their triggers overlap the current skills (e.g. incident-triage vs sre-engineering).
+RETIRED_SKILLS="accessibility-review incident-triage planner requirements-refiner ui-review ux-copy"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLED_SKILLS_DIR="$SCRIPT_DIR/skills"
@@ -31,7 +39,8 @@ Options:
   --import-github <url>                           Import skill folders from a GitHub repo
   --import-dir <path>                             Import skill folders from a local directory
   --without-support-files                         Do not create support files
-  --verify                                        Verify installed skills
+  --verify                                        Install, then verify the installed skills
+  --prune-retired                                 Remove skills this repo no longer ships (e.g. incident-triage)
   --dry-run                                       Print actions only
   --force                                         Overwrite existing skills
   --uninstall                                     Remove installed/generated skills for selected bundle
@@ -47,6 +56,7 @@ Examples:
   ./setup_agent_skills.sh --import-dir ./skills --force
   ./setup_agent_skills.sh --dry-run --bundle all
   ./setup_agent_skills.sh --uninstall --bundle core
+  ./setup_agent_skills.sh --bundle all --force --prune-retired
 EOF
 }
 
@@ -219,6 +229,7 @@ write_skill() {
 
   if [[ -d "$dst" && "$FORCE" -ne 1 ]]; then
     log "skip   $dst (exists, use --force to overwrite)"
+    SKIPPED=$((SKIPPED + 1))
     return 0
   fi
 
@@ -234,9 +245,9 @@ write_skill() {
   # `cp -r src/examples dst/examples` nests as dst/examples/examples when the
   # destination already exists, and a re-install must also drop support files
   # the skill no longer ships.
+  run_cmd rm -rf "$dst/examples"
+  run_cmd rm -f "$dst/template.md"
   if [[ "$WITHOUT_SUPPORT_FILES" -ne 1 ]]; then
-    run_cmd rm -rf "$dst/examples"
-    run_cmd rm -f "$dst/template.md"
     if [[ -f "$src/template.md" ]]; then
       run_cmd cp "$src/template.md" "$dst/template.md"
     fi
@@ -245,6 +256,7 @@ write_skill() {
     fi
   fi
 
+  INSTALLED=$((INSTALLED + 1))
   log "install $skill"
 }
 
@@ -259,6 +271,19 @@ remove_skill() {
   else
     log "skip   $dir (not found)"
   fi
+}
+
+prune_retired() {
+  local root="$1"
+  local skill
+  for skill in $RETIRED_SKILLS; do
+    [[ -d "$root/$skill" ]] || continue
+    if [[ "$PRUNE_RETIRED" -eq 1 ]]; then
+      remove_skill "$root" "$skill"
+    else
+      log "warn   $root/$skill is a retired skill; remove it with --prune-retired"
+    fi
+  done
 }
 
 verify_skill() {
@@ -303,6 +328,12 @@ copy_skill_dir() {
     return 0
   fi
 
+  # Importing from the install root itself would rm -rf the source before copying it.
+  if [[ -d "$dst_root/$skill_name" && "$(cd "$src" && pwd -P)" == "$(cd "$dst_root/$skill_name" && pwd -P)" ]]; then
+    log "skip   $src (source is the install destination)"
+    return 0
+  fi
+
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "[dry-run] import $src -> $dst_root/$skill_name"
   else
@@ -340,7 +371,8 @@ import_from_github() {
   need_cmd git
 
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  IMPORT_TMP="$tmp"
+  trap 'rm -rf "$IMPORT_TMP"' EXIT
 
   if [[ "$DRY_RUN" -eq 1 ]]; then
     log "[dry-run] git clone $repo_url $tmp/repo"
@@ -421,20 +453,25 @@ validate_args() {
   esac
 }
 
+need_value() {
+  [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || err "Missing value for $1"
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --target) TARGET="${2:-}"; shift 2 ;;
-      --scope) SCOPE="${2:-}"; shift 2 ;;
-      --bundle) BUNDLE="${2:-}"; shift 2 ;;
-      --import-github) IMPORT_GITHUB="${2:-}"; shift 2 ;;
-      --import-dir) IMPORT_DIR="${2:-}"; shift 2 ;;
+      --target) need_value "$@"; TARGET="$2"; shift 2 ;;
+      --scope) need_value "$@"; SCOPE="$2"; shift 2 ;;
+      --bundle) need_value "$@"; BUNDLE="$2"; shift 2 ;;
+      --import-github) need_value "$@"; IMPORT_GITHUB="$2"; shift 2 ;;
+      --import-dir) need_value "$@"; IMPORT_DIR="$2"; shift 2 ;;
       --without-support-files) WITHOUT_SUPPORT_FILES=1; shift ;;
       --verify) VERIFY=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --force) FORCE=1; shift ;;
       --uninstall) UNINSTALL=1; shift ;;
       --self-test) SELF_TEST=1; shift ;;
+      --prune-retired) PRUNE_RETIRED=1; shift ;;
       --list) LIST_ONLY=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) err "Unknown argument: $1" ;;
@@ -492,14 +529,14 @@ main() {
     log "root:   $root"
   fi
 
-  run_cmd mkdir -p "$root"
-
   if [[ "$UNINSTALL" -eq 1 ]]; then
     while IFS= read -r skill; do
       remove_skill "$root" "$skill"
     done < <(skills_for_bundle "$BUNDLE")
     exit 0
   fi
+
+  run_cmd mkdir -p "$root"
 
   if [[ -n "$IMPORT_DIR" ]]; then
     import_from_dir "$IMPORT_DIR" "$root"
@@ -513,9 +550,12 @@ main() {
     write_skill "$root" "$skill"
   done < <(skills_for_bundle "$BUNDLE")
 
+  prune_retired "$root"
+
+  local verify_failed=0
   if [[ "$VERIFY" -eq 1 ]]; then
     while IFS= read -r skill; do
-      verify_skill "$root" "$skill"
+      verify_skill "$root" "$skill" || verify_failed=1
     done < <(skills_for_bundle "$BUNDLE")
   fi
 
@@ -528,7 +568,10 @@ Scope:  $SCOPE
 Root:   $root
 Bundle: $BUNDLE
 
-Installed skills:
+Installed: $INSTALLED, skipped (already present): $SKIPPED
+$(if [[ "$SKIPPED" -gt 0 ]]; then echo "Re-run with --force to update skipped skills to this version."; fi)
+
+Skills in bundle:
 $(skills_for_bundle "$BUNDLE" | sed 's/^/  - /')
 
 How to use:
@@ -548,6 +591,8 @@ EOF
   Use natural language so the agent auto-selects the matching skill.
 EOF
   fi
+
+  [[ "$verify_failed" -eq 0 ]] || err "verification failed (see 'verify fail' lines above)"
 }
 
 main "$@"

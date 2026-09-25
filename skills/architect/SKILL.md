@@ -1,6 +1,6 @@
 ---
 name: architect
-description: Use when designing a new system or service, choosing between architectural options (monolith vs. service, sync vs. async, which broker/store), reviewing the architecture of a design doc, or planning how a system handles growth, failure, consistency and migration. Produces a numbers-driven design: options, decision, failure modes, rollout, cost. Not for endpoint/contract design (use `api-design`), schemas and indexes (`db-design`), step-by-step data migrations (`migration-safety`), go/no-go on a release (`release-readiness`), or live incidents and alert tuning (`sre-engineering`).
+description: "Use when designing a new system or service, choosing between architectural options (monolith vs. service, sync vs. async, which broker/store), reviewing the architecture of a design doc, or planning how a system handles growth, failure, consistency and migration. Produces a numbers-driven design: options, decision, failure modes, rollout, cost. Not for endpoint/contract design (use `api-design`), schemas and indexes (`db-design`), step-by-step data migrations (`migration-safety`), go/no-go on a release (`release-readiness`), or live incidents and alert tuning (`sre-engineering`)."
 ---
 
 # Architect

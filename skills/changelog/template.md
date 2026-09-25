@@ -1,7 +1,7 @@
 # Changelog: [version] — [YYYY-MM-DD | UNKNOWN]
 
 **Range**: [from]..[to] — [N] commits, [M] PRs
-**Version check**: [OK — requires <major|minor|patch> | ⚠ MISMATCH — <entries> are breaking; SemVer requires <X.0.0> | Unreleased — requires <bump> (next: <X.Y.Z> after <last tag>)]
+**Version check**: [OK — requires {major|minor|patch} | ⚠ MISMATCH — {entries} are breaking; SemVer requires {X.0.0} | Unreleased — requires {bump} (next: {X.Y.Z} after {last tag})]
 
 ## Developer Changelog
 

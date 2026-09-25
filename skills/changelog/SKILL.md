@@ -32,7 +32,7 @@ gh pr list --state merged --base main --search "merged:>=2024-03-01" \
 
 Also collect: the requested version and release date (ask if missing), and whether the product's readers are end users or developers (library/API/CLI — then the release notes section may be skipped if the user agrees).
 
-**No version yet:** use `# Changelog: Unreleased` (date `UNKNOWN`) and `## [Unreleased]` as the Keep a Changelog heading, and write the Version check as `Unreleased — requires <bump> (next: <X.Y.Z> after <last tag>)`.
+**No version yet:** use `# Changelog: Unreleased` (date `UNKNOWN`) and `## [Unreleased]` as the Keep a Changelog heading, and write the Version check as `Unreleased — requires {bump} (next: {X.Y.Z} after {last tag})`.
 
 ## Step 2 — Classify
 
@@ -97,7 +97,7 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 # Changelog: [version] — [YYYY-MM-DD | UNKNOWN]
 
 **Range**: [from]..[to] — [N] commits, [M] PRs
-**Version check**: [OK — requires <major|minor|patch> | ⚠ MISMATCH — <entries> are breaking; SemVer requires <X.0.0> | Unreleased — requires <bump> (next: <X.Y.Z> after <last tag>)]
+**Version check**: [OK — requires {major|minor|patch} | ⚠ MISMATCH — {entries} are breaking; SemVer requires {X.0.0} | Unreleased — requires {bump} (next: {X.Y.Z} after {last tag})]
 
 ## Developer Changelog
 

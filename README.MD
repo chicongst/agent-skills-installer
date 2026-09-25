@@ -80,6 +80,7 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 
 - architect
 - code-review
+- code-audit
 - debug
 - fix-bug
 - refactor
@@ -95,6 +96,7 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 - db-design
 - migration-safety
 - sre-engineering
+- release-readiness
 - performance-review
 
 ### `frontend` = core +
@@ -144,17 +146,39 @@ Install for Windsurf
 ./setup_agent_skills.sh --target windsurf
 ```
 
-Verify installation
+Install, then verify every skill in the bundle (exits non-zero if any check fails)
 
 ```sh
-./setup_agent_skills.sh --verify
+./setup_agent_skills.sh --bundle all --verify
 ```
 
-Dry run
+Update to the latest version (existing skills are skipped unless `--force` is given)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/main/install.sh | bash -s -- --bundle all --force
+```
+
+Remove skills this repo no longer ships (`incident-triage`, `ui-review`, `ux-copy`, `accessibility-review`, `planner`, `requirements-refiner`); without the flag the installer only warns
+
+```sh
+./setup_agent_skills.sh --bundle all --force --prune-retired
+```
+
+Uninstall a bundle
+
+```sh
+./setup_agent_skills.sh --uninstall --bundle core
+```
+
+Dry run, list bundles, self-test
 
 ```sh
 ./setup_agent_skills.sh --dry-run
+./setup_agent_skills.sh --list
+./setup_agent_skills.sh --self-test
 ```
+
+`--without-support-files` installs only `SKILL.md` (no `template.md` or `examples/`).
 
 ---
 
@@ -196,11 +220,15 @@ From local directory
 ./setup_agent_skills.sh --import-dir ./skills
 ```
 
+Importing from the install root itself is skipped, so it never deletes your skills.
+
 Skill structure
 
 ```
 skill-name/
-  SKILL.md
+  SKILL.md            # required: frontmatter with name + description
+  template.md         # optional: mirrors the output format in SKILL.md
+  examples/example.txt  # optional: a worked example
 ```
 
 ---
@@ -209,9 +237,5 @@ skill-name/
 
 PRs are welcome.
 
-Each skill should follow
-
-```
-skill-name/
-  SKILL.md
-```
+Each skill should follow the structure above. Keep the frontmatter valid YAML: quote the
+`description` if it contains `: `, and make `name` match the folder name.

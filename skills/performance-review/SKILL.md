@@ -1,6 +1,6 @@
 ---
 name: performance-review
-description: Use when an endpoint, query, job, page, or service is slow and you need the bottleneck found from measurements (percentiles, traces, profiles, EXPLAIN ANALYZE), fixes ranked by gain, cost, and rollout risk, and a re-measurement plan; also to review a load test. Triggers: "why is this slow", "p99", "review hiệu năng", "tối ưu hiệu năng". Not for code-level complexity review (use `algorithm-review`), schema/index design (use `db-design`), applying DB changes safely (use `migration-safety`), or a live incident (use `sre-engineering`).
+description: "Use when an endpoint, query, job, page, or service is slow and you need the bottleneck found from measurements (percentiles, traces, profiles, EXPLAIN ANALYZE), fixes ranked by gain, cost, and rollout risk, and a re-measurement plan; also to review a load test. Triggers: \"why is this slow\", \"p99\", \"review hiệu năng\", \"tối ưu hiệu năng\". Not for code-level complexity review (use `algorithm-review`), schema/index design (use `db-design`), applying DB changes safely (use `migration-safety`), or a live incident (use `sre-engineering`)."
 ---
 
 # Performance Review

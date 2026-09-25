@@ -1,6 +1,6 @@
 ---
 name: mastery
-description: Use when writing or modifying code in any language — a silent baseline of senior engineering defaults (errors, bounded queries, idempotency, concurrency, security, testability). When a task-specific skill applies it leads and this only fills gaps: refactor/dotnet-code-refactor, fix-bug/debug, test-writer, ui-design, db-design, api-design. Never overrides the project's conventions or CLAUDE.md. Not for reviewing or auditing code — use code-review, pr-review, code-audit, or dotnet-code-review.
+description: "Use when writing or modifying code in any language — a silent baseline of senior engineering defaults (errors, bounded queries, idempotency, concurrency, security, testability). When a task-specific skill applies it leads and this only fills gaps: refactor/dotnet-code-refactor, fix-bug/debug, test-writer, ui-design, db-design, api-design. Never overrides the project's conventions or CLAUDE.md. Not for reviewing or auditing code — use code-review, pr-review, code-audit, or dotnet-code-review."
 ---
 
 # Senior Engineering Defaults
