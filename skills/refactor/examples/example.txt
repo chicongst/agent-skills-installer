@@ -1,124 +1,253 @@
-# Example: /refactor
+# Example: refactor
 
-## User Input (code to refactor)
+## User Input
 
+"Refactor register_user in accounts/registration.py — it's hard to read. Go ahead and apply it, but don't change behavior."
+
+Project facts available to the agent:
+- `data` is the parsed JSON request body (a dict).
+- Tests live under tests/ and run with `unittest` (`python -m unittest`). There are no tests for accounts/registration.py.
+- Neighboring modules in accounts/ keep private helpers as `_name` functions in the same file. No formatter is configured.
+
+accounts/registration.py:
+```python
+ 1  import hashlib
+ 2  from datetime import datetime
+ 3
+ 4  from app.infra import db, log, send_email
+ 5
+ 6
+ 7  def register_user(data):
+ 8      if not data.get('email'):
+ 9          return False, "Email required"
+10      if '@' not in data['email'] or '.' not in data['email'].split('@')[1]:
+11          return False, "Invalid email"
+12      if not data.get('password'):
+13          return False, "Password required"
+14      if len(data['password']) < 8:
+15          return False, "Password too short"
+16      if not any(c.isupper() for c in data['password']):
+17          return False, "Password needs uppercase"
+18      if not any(c.isdigit() for c in data['password']):
+19          return False, "Password needs digit"
+20      existing = db.find_one({'email': data['email']})
+21      if existing:
+22          return False, "Email already registered"
+23      hashed = hashlib.md5(data['password'].encode()).hexdigest()
+24      user = {
+25          'email': data['email'],
+26          'password': hashed,
+27          'name': data.get('name', ''),
+28          'created_at': datetime.now()
+29      }
+30      db.insert(user)
+31      send_email(data['email'], 'Welcome!', f"Hi {data.get('name', 'there')}, thanks for joining!")
+32      send_email('admin@company.com', 'New user', f"New user registered: {data['email']}")
+33      log.info(f"User registered: {data['email']}")
+34      return True, "Registration successful"
+```
+
+## Skill Output
+
+# Refactor: register_user (accounts/registration.py)
+
+**Status**: Applied
+**Safety net**: ⚠️ characterization tests added first
+**Conventions followed**: private helper as a `_name` function in the same file (as in neighboring accounts/ modules); `unittest`; no formatter run, since none is configured
+
+## Smells
+| # | Smell | Location | Move | Risk |
+|---|---|---|---|---|
+| 1 | Long function: payload validation (6 rules) is mixed with lookup, persistence and notification, so the rules cannot be read or tested on their own | accounts/registration.py:8-19 | Extract Function `_registration_error` | RISKY — moves password-policy checks, but verbatim and in the same module |
+| 2 | Repeated expression: `data['email']` 7 times, `data['password']` 4 times | accounts/registration.py:10-33 | Introduce local variables | SAFE |
+
+The MD5 line (23) is credential handling; it is not touched. Replacing it is DANGEROUS and a behavior change — see recommendations.
+
+## Steps
+### Step 1 — Safety net: characterization tests
+**Why**: No tests exist, and step 2 is RISKY. These tests assert what the code does today, quirks included (an empty `name` produces "Hi , thanks for joining!"; the email is not trimmed).
+**Change**: new file tests/test_registration_characterization.py
+```python
+import hashlib
+import unittest
+from unittest import mock
+
+from accounts import registration as reg
+
+VALID = {'email': 'a@b.io', 'password': 'Passw0rd'}
+
+
+class RegisterUserCharacterization(unittest.TestCase):
+    """Pins current behavior, quirks included. Written before refactoring; must pass before and after."""
+
+    def setUp(self):
+        self.db = mock.Mock()
+        self.db.find_one.return_value = None
+        for name, value in [('db', self.db), ('send_email', mock.Mock()),
+                            ('log', mock.Mock()), ('datetime', mock.Mock())]:
+            patcher = mock.patch.object(reg, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        reg.datetime.now.return_value = 'NOW'
+
+    def test_validation_messages_in_order(self):
+        cases = [
+            ({}, 'Email required'),
+            ({'email': 'no-at.io'}, 'Invalid email'),
+            ({'email': 'a@nodot'}, 'Invalid email'),
+            ({'email': 'a@b.io'}, 'Password required'),
+            ({'email': 'a@b.io', 'password': 'Sh0rt'}, 'Password too short'),
+            ({'email': 'a@b.io', 'password': 'alllower1'}, 'Password needs uppercase'),
+            ({'email': 'a@b.io', 'password': 'NoDigits'}, 'Password needs digit'),
+        ]
+        for data, message in cases:
+            with self.subTest(data=data):
+                self.assertEqual(reg.register_user(data), (False, message))
+        self.db.find_one.assert_not_called()
+
+    def test_duplicate_email_has_no_side_effects(self):
+        self.db.find_one.return_value = {'email': 'a@b.io'}
+        self.assertEqual(reg.register_user(VALID), (False, 'Email already registered'))
+        self.db.insert.assert_not_called()
+        reg.send_email.assert_not_called()
+
+    def test_success_side_effects(self):
+        self.assertEqual(reg.register_user({**VALID, 'name': ''}), (True, 'Registration successful'))
+        self.db.insert.assert_called_once_with({
+            'email': 'a@b.io',
+            'password': hashlib.md5(b'Passw0rd').hexdigest(),
+            'name': '',
+            'created_at': 'NOW',
+        })
+        self.assertEqual(reg.send_email.call_args_list, [
+            mock.call('a@b.io', 'Welcome!', 'Hi , thanks for joining!'),  # quirk: '' is not replaced by 'there'
+            mock.call('admin@company.com', 'New user', 'New user registered: a@b.io'),
+        ])
+        reg.log.info.assert_called_once_with('User registered: a@b.io')
+
+    def test_email_is_not_trimmed(self):
+        reg.register_user({**VALID, 'email': ' a@b.io '})
+        self.db.find_one.assert_called_once_with({'email': ' a@b.io '})
+
+    def test_non_string_email_raises(self):
+        with self.assertRaises(TypeError):
+            reg.register_user({**VALID, 'email': 12345})
+
+
+if __name__ == '__main__':
+    unittest.main()
+```
+**Verified by**: `python -m unittest tests.test_registration_characterization` on the original code → `Ran 5 tests … OK`.
+
+### Step 2 — Extract Function: validation → `_registration_error(data)`
+**Why**: The six rules become one named unit with a clear contract (first error message, or `None`), and `register_user` reads as lookup → persist → notify.
+**Change**: lines 8-19 become
+```python
+    error = _registration_error(data)
+    if error is not None:
+        return False, error
+```
+and the rules move verbatim to the end of the file; only `return False, "…"` becomes `return "…"`:
+```python
+def _registration_error(data):
+    """Return the first validation error message for a registration payload, or None if it is valid."""
+    if not data.get('email'):
+        return "Email required"
+    if '@' not in data['email'] or '.' not in data['email'].split('@')[1]:
+        return "Invalid email"
+    if not data.get('password'):
+        return "Password required"
+    if len(data['password']) < 8:
+        return "Password too short"
+    if not any(c.isupper() for c in data['password']):
+        return "Password needs uppercase"
+    if not any(c.isdigit() for c in data['password']):
+        return "Password needs digit"
+    return None
+```
+**Verified by**: characterization tests → `Ran 5 tests … OK`.
+
+### Step 3 — Introduce local variables: `email`, `password`
+**Why**: Removes the repeated `data['email']` / `data['password']` lookups (smell 2) in both functions.
+**Change**: `_registration_error` after the step:
+```python
+def _registration_error(data):
+    """Return the first validation error message for a registration payload, or None if it is valid."""
+    email = data.get('email')
+    if not email:
+        return "Email required"
+    if '@' not in email or '.' not in email.split('@')[1]:
+        return "Invalid email"
+    password = data.get('password')
+    if not password:
+        return "Password required"
+    if len(password) < 8:
+        return "Password too short"
+    if not any(c.isupper() for c in password):
+        return "Password needs uppercase"
+    if not any(c.isdigit() for c in password):
+        return "Password needs digit"
+    return None
+```
+`email`/`password` hold the same object that `data['email']`/`data['password']` returned, because `data` is a dict. `register_user` after the step (`data['password']` on the MD5 line stays, since that line is not touched):
 ```python
 def register_user(data):
-    if not data.get('email'):
-        return False, "Email required"
-    if '@' not in data['email'] or '.' not in data['email'].split('@')[1]:
-        return False, "Invalid email"
-    if not data.get('password'):
-        return False, "Password required"
-    if len(data['password']) < 8:
-        return False, "Password too short"
-    if not any(c.isupper() for c in data['password']):
-        return False, "Password needs uppercase"
-    if not any(c.isdigit() for c in data['password']):
-        return False, "Password needs digit"
-    existing = db.find_one({'email': data['email']})
+    error = _registration_error(data)
+    if error is not None:
+        return False, error
+    email = data['email']
+    existing = db.find_one({'email': email})
     if existing:
         return False, "Email already registered"
     hashed = hashlib.md5(data['password'].encode()).hexdigest()
     user = {
-        'email': data['email'],
+        'email': email,
         'password': hashed,
         'name': data.get('name', ''),
         'created_at': datetime.now()
     }
     db.insert(user)
-    send_email(data['email'], 'Welcome!', f"Hi {data.get('name', 'there')}, thanks for joining!")
-    send_email('admin@company.com', 'New user', f"New user registered: {data['email']}")
-    log.info(f"User registered: {data['email']}")
-    return True, "Registration successful"
-```
-
-## Skill Output
-
-# Refactoring Plan: register_user()
-
-## Current Issues
-| Issue | Location | Impact |
-|-------|----------|--------|
-| Security bug: MD5 used for password hashing | Line 12 | Critical — not a refactor blocker but must fix |
-| Function does 4 things: validate, check duplicate, save, notify | All | Hard to test, hard to change |
-| Inline validation rules hard to read and extend | Lines 2-10 | New rules require editing this function |
-| Email notification logic mixed with registration logic | Lines 15-17 | Can't change notification behavior without touching registration |
-
-## Refactoring Steps
-
-### Step 1: Extract validation into a dedicated function
-**Why**: Validation is independently testable and likely to grow (add phone, TOS acceptance, etc.)
-```python
-def validate_registration_data(data: dict) -> tuple[bool, str | None]:
-    """Returns (is_valid, error_message). error_message is None if valid."""
-    email = data.get('email', '').strip()
-    if not email:
-        return False, "Email required"
-    if not _is_valid_email(email):
-        return False, "Invalid email format"
-
-    password = data.get('password', '')
-    if not password:
-        return False, "Password required"
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters"
-    if not any(c.isupper() for c in password):
-        return False, "Password must contain at least one uppercase letter"
-    if not any(c.isdigit() for c in password):
-        return False, "Password must contain at least one digit"
-
-    return True, None
-
-def _is_valid_email(email: str) -> bool:
-    parts = email.split('@')
-    return len(parts) == 2 and '.' in parts[1] and len(parts[1]) > 2
-```
-
-### Step 2: Fix the security bug (separate commit — this is a bug fix, not refactoring)
-```python
-# Replace MD5 with bcrypt
-import bcrypt
-
-def _hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-```
-
-### Step 3: Extract notification side effects
-```python
-def _notify_registration(email: str, name: str) -> None:
-    display_name = name or 'there'
-    send_email(email, 'Welcome!', f"Hi {display_name}, thanks for joining!")
+    send_email(email, 'Welcome!', f"Hi {data.get('name', 'there')}, thanks for joining!")
     send_email('admin@company.com', 'New user', f"New user registered: {email}")
-```
-
-### Step 4: Clean register_user — now just orchestration
-```python
-def register_user(data: dict) -> tuple[bool, str]:
-    is_valid, error = validate_registration_data(data)
-    if not is_valid:
-        return False, error
-
-    email = data['email'].strip()
-    if db.find_one({'email': email}):
-        return False, "Email already registered"
-
-    user = {
-        'email': email,
-        'password': _hash_password(data['password']),
-        'name': data.get('name', '').strip(),
-        'created_at': datetime.utcnow(),
-    }
-    db.insert(user)
-    _notify_registration(email, user['name'])
-
-    log.info("User registered: %s", email)
+    log.info(f"User registered: {email}")
     return True, "Registration successful"
 ```
+**Verified by**: characterization tests → `Ran 5 tests … OK`.
 
-## Behavioral Guarantees
-- [ ] All existing validation rules preserved (same error messages)
-- [ ] Email duplicate check still runs
-- [ ] Both notification emails still sent on success
-- [ ] Return signature unchanged: (bool, str)
-- [ ] Tests written for validate_registration_data() independently
+## Behavior verification
+- `python -m unittest tests.test_registration_characterization`: OK on the original, after step 2, and after step 3.
+- Differential run: original and refactored `register_user` called on the same 20 inputs with a fake `db` / `send_email` / `log` and a frozen `datetime.now()`, comparing return value or exception (type and message) plus every recorded call in order → `20 cases, 0 mismatches` for both the step-2 and the final version. The inputs included `None` (both raise `AttributeError: 'NoneType' object has no attribute 'get'`), `{'email': 12345, …}` (both raise the same `TypeError`), `'a@b@c.io'`, `'a@'`, `' a@b.io '`, and `name` set to `''`, `None` and missing.
+- Sanity check that the tests have teeth: a variant of the final code that sets `email = data['email'].strip()` in `register_user`, renames "Invalid email" to "Invalid email format", and uses `data.get('name') or 'there'` gets `FAILED (failures=4)` — no errors — from the same suite.
+
+## Deliberately not changed
+- The two `send_email` calls and `log.info` (lines 31-33): 3 lines, used once. Extracting a `_notify` helper adds a jump without a new contract.
+- `db.find_one` stays next to its only caller.
+- Password rules stay as plain `if`s. A rule table would be an abstraction with a single consumer.
+- `datetime.now()` (naive local time): switching to UTC would change the stored value.
+- The f-string in `log.info`: switching to `log.info("…%s", email)` changes the log record's `msg`, which handlers and tests can observe. Do it as its own lint change if the project wants it.
+- `'admin@company.com'` is used once and is self-explanatory, so it gets no constant.
+
+## Behavior changes recommended (not applied)
+### 🔴 BLOCKER Passwords are stored as unsalted MD5
+**Location**: accounts/registration.py:23 (after refactor: line 15)
+**Problem**: Unsalted MD5 is fast to brute-force, and identical passwords produce identical hashes. A database leak exposes most passwords.
+**Proposed change**: Hash with bcrypt or argon2 via a vetted library, in its own change reviewed as a security fix. This is DANGEROUS work: confirm the approach with the user first.
+**Migration / rollout**: Existing rows hold MD5 hex, and the login/verify code (not in this file) is assumed to compare MD5, so write and verify must change together. (1) Store the algorithm with each hash, and deploy verify code that accepts both formats before any new-format hash is written. (2) Hash new registrations with the new algorithm. (3) On each successful login, re-hash MD5 rows. (4) To protect dormant accounts now, wrap the existing MD5 hex in the new algorithm (`bcrypt(md5_hex)`, marked as its own format) in a batched backfill. Old-format rows then remain only until the backfill finishes. Add tests for both formats.
+
+### 🟠 MAJOR Duplicate-email check is racy
+**Location**: accounts/registration.py:20-30
+**Problem**: `find_one` and then `insert` is check-then-act. Two concurrent registrations for the same email can both pass the check and both insert.
+**Proposed change**: A unique constraint on `email` in the store (assuming the store supports one), with the duplicate-key error mapped to the existing "Email already registered" response.
+**Migration / rollout**: Find and resolve existing duplicate emails before creating the constraint, or index creation fails.
+
+### 🟡 MINOR Emails are not normalized
+**Location**: accounts/registration.py:10, 20
+**Problem**: `' a@b.io '` and `'A@b.io'` pass validation and are looked up and stored exactly as given, so they can become accounts separate from `'a@b.io'` (the characterization test pins the untrimmed lookup).
+**Proposed change**: Trim and lowercase the email before validation and lookup.
+**Migration / rollout**: Existing stored emails need the same normalization. Check for collisions it creates first, and apply the same normalization at login.
+
+### 💭 NIT Empty name gives "Hi , thanks for joining!"
+**Location**: accounts/registration.py:31
+**Problem**: `data.get('name', 'there')` falls back only when `name` is missing, not when it is `''`.
+**Proposed change**: `data.get('name') or 'there'`. This changes the email text, so update the characterization test in the same change.
+**Migration / rollout**: none

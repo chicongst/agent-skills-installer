@@ -1,101 +1,197 @@
 # Example: /code-review
 
-## User Input (code to review)
+## User Input
 
+Review this before I wire it into checkout. Two files:
+
+`coupons.py`
 ```python
-def process_payment(user_id, amount, card_number):
-    user = db.query(f"SELECT * FROM users WHERE id = {user_id}")
-    if not user:
-        return {"error": "User not found"}
+import sqlite3
 
-    log.info(f"Processing payment for user {user_id}, card: {card_number}, amount: {amount}")
 
-    result = payment_gateway.charge(card_number, amount)
+def apply_coupon(conn: sqlite3.Connection, order_id: int, code: str):
+    coupon = conn.execute(
+        f"SELECT percent_off, uses_left FROM coupons WHERE code = '{code}'"
+    ).fetchone()
+    if coupon is None:
+        return None
+    percent_off, uses_left = coupon
+    if uses_left < 0:
+        return None
 
-    if result["status"] == "success":
-        db.query(f"UPDATE users SET balance = balance - {amount} WHERE id = {user_id}")
-        db.query(f"INSERT INTO transactions VALUES ({user_id}, {amount}, 'completed')")
-        return {"status": "success"}
-    else:
-        return {"error": result["message"]}
+    total = conn.execute(
+        "SELECT total_cents FROM orders WHERE id = ?", (order_id,)
+    ).fetchone()[0]
+    discounted = total - total * percent_off / 100
+
+    conn.execute(
+        "UPDATE orders SET total_cents = ? WHERE id = ?", (discounted, order_id)
+    )
+    conn.execute(
+        "UPDATE coupons SET uses_left = uses_left - 1 WHERE code = ?", (code,)
+    )
+    conn.commit()
+    return discounted
+```
+
+`test_coupons.py`
+```python
+import sqlite3
+
+import pytest
+
+from coupons import apply_coupon
+
+
+@pytest.fixture
+def conn():
+    c = sqlite3.connect(":memory:")
+    c.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, total_cents INTEGER)")
+    c.execute("CREATE TABLE coupons (code TEXT PRIMARY KEY, percent_off INTEGER, uses_left INTEGER)")
+    c.execute("INSERT INTO orders VALUES (1, 2000)")
+    c.execute("INSERT INTO coupons VALUES ('SAVE10', 10, 1)")
+    c.commit()
+    return c
+
+
+def test_apply_coupon(conn):
+    assert apply_coupon(conn, 1, "SAVE10") is not None
+
+
+@pytest.mark.skip(reason="flaky")
+def test_exhausted_coupon_rejected(conn):
+    conn.execute("UPDATE coupons SET uses_left = 0")
+    assert apply_coupon(conn, 1, "SAVE10") is None
 ```
 
 ## Skill Output
 
-# Code Review: process_payment()
+# Code Review — `apply_coupon` (coupons.py, test_coupons.py)
+
+**Blast radius:** CRITICAL — writes order totals and consumes coupon uses (money).
+**Findings:** 🔴 1 · 🟠 4 · 🟡 1 · 💭 1
+**Verdict:** REQUEST CHANGES
 
 ## Summary
-This function has **two critical security vulnerabilities** (SQL injection + PII in logs)
-and a **critical data integrity bug** (non-atomic balance update). These must be fixed
-before this code can be merged. The logic is straightforward once the security issues
-are addressed.
+`apply_coupon` looks up a coupon by code, checks it has uses left, reduces the order's
+`total_cents` by `percent_off`, and decrements `uses_left`. The coupon lookup is
+SQL-injectable, the usage limit is not enforced (off-by-one plus a check-then-act race),
+non-whole discounts turn totals into fractional cents, and the one test that would catch
+the limit bug is skipped.
+No project context — reviewed against general practice only.
 
 ## Findings
 
-### 🔴 Security: SQL Injection (×3)
-**Location**: Lines 2, 10, 11
-**Problem**: User input interpolated directly into SQL strings. An attacker can pass
-`user_id = "1 OR 1=1"` to bypass user lookup, or `amount = "0; DROP TABLE users"`.
-**Risk**: Full database compromise — data exfiltration, deletion, or manipulation.
-**Fix**:
+### 🔴 BLOCKER
+
+#### [B1] SQL injection through the coupon code [verified]
+**Location:** `coupons.py:L6`
+**Problem:** `code` is interpolated into the SQL string. With a table holding only
+`('STAFF50', 50, 5)`, calling `apply_coupon(conn, 1, "x' OR '1'='1")` matched STAFF50 and
+cut order 1 from 2000 to 1000.0 cents.
+**Risk:** Anyone who can submit a coupon code gets a discount without a valid code, or picks
+their own: `"x' UNION SELECT 100, 1 --"` needs no coupon row at all and set the order to 0.0.
+**Fix:** Use a placeholder, as the other queries in this file already do.
 ```python
-# Use parameterized queries
-user = db.query("SELECT * FROM users WHERE id = %s", (user_id,))
-db.query("UPDATE users SET balance = balance - %s WHERE id = %s", (amount, user_id))
-db.query(
-    "INSERT INTO transactions (user_id, amount, status) VALUES (%s, %s, %s)",
-    (user_id, amount, "completed")
-)
+coupon = conn.execute(
+    "SELECT percent_off, uses_left FROM coupons WHERE code = ?", (code,)
+).fetchone()
 ```
 
-### 🔴 Security: Card Number Logged in Plaintext
-**Location**: Line 4
-**Problem**: Full card number written to logs. Logs are typically stored in log
-aggregators (Datadog, Splunk) with broad access — this is a PCI-DSS violation.
-**Risk**: Credential exposure, regulatory fines, loss of payment processing ability.
-**Fix**:
-```python
-# Log only last 4 digits
-card_masked = f"****{card_number[-4:]}"
-log.info(f"Processing payment for user {user_id}, card: {card_masked}, amount: {amount}")
-```
+### 🟠 MAJOR
 
-### 🔴 Data Integrity: Non-Atomic Balance Update
-**Location**: Lines 10-11
-**Problem**: Balance deduction and transaction insert are two separate queries with no
-transaction wrapper. If the process crashes between them, balance is deducted but no
-transaction record exists — money disappears.
-**Risk**: Data inconsistency, incorrect user balances, audit trail gaps.
-**Fix**:
+#### [M1] Coupon usage limit is not enforced [verified]
+**Location:** `coupons.py:L11`, `coupons.py:L5-L12` with `coupons.py:L22-L24`
+**Problem:** Two defects on the same limit.
+(a) `uses_left < 0` accepts a coupon with `uses_left = 0`: calling it on an exhausted
+SAVE10 returned 1800.0 and left `uses_left = -1`.
+(b) The check (L5-L12) and the decrement (L22-L24) are separate statements. Interleaving
+the same read-then-decrement steps on two connections to one database with `uses_left = 1`:
+both reads saw 1, both decrements committed, `uses_left` ended at -1.
+**Risk:** Every coupon can be used at least once more than its limit, more under concurrent checkouts.
+**Fix:** Claim a use with one conditional UPDATE inside a transaction and check `rowcount`;
+this replaces the L11 check and the L22-L24 decrement.
 ```python
-with db.transaction():
-    db.query("UPDATE users SET balance = balance - %s WHERE id = %s", (amount, user_id))
-    db.query(
-        "INSERT INTO transactions (user_id, amount, status) VALUES (%s, %s, %s)",
-        (user_id, amount, "completed")
+with conn:  # commits on success, rolls back on exception
+    claimed = conn.execute(
+        "UPDATE coupons SET uses_left = uses_left - 1 "
+        "WHERE code = ? AND uses_left > 0",
+        (code,),
     )
+    if claimed.rowcount == 0:
+        return None  # unknown or exhausted coupon
+    ...  # read percent_off, update the order
 ```
 
-### 🟡 Missing: Input Validation
-**Problem**: No validation of `amount` (could be negative, zero, or exceed balance).
-No validation that `card_number` is a valid format.
-**Fix**: Add validation before the DB query:
+#### [M2] Order total stored as a float [verified]
+**Location:** `coupons.py:L17`
+**Problem:** `/` is float division. A 999-cent order with a 15% coupon became 849.15, and
+SQLite stored it with `typeof(total_cents) = 'real'` in a column meant for whole cents.
+**Risk:** Fractional cents flow into payment amounts and reconciliation; totals stop summing exactly.
+**Fix:** Stay in integers and make the rounding rule explicit (see Questions).
 ```python
-if amount <= 0:
-    return {"error": "Amount must be positive"}
-if user["balance"] < amount:
-    return {"error": "Insufficient balance"}
+discounted = total - (total * percent_off + 50) // 100  # discount rounded half up: 999 -> 849
 ```
 
-### 🟡 Missing: Error Handling on DB Failure
-**Problem**: No try/except — a DB exception will propagate as an unhandled 500.
-**Fix**: Wrap in try/except and return a safe error response.
+#### [M3] Unknown order id crashes the function [verified]
+**Location:** `coupons.py:L14-L16`
+**Problem:** `fetchone()` returns `None` when the order does not exist, so `[0]` raises
+`TypeError: 'NoneType' object is not subscriptable` (reproduced with `order_id=42`).
+**Risk:** An unhandled exception instead of a clear "order not found" result. Rated MAJOR
+because the caller is not visible; it is a BLOCKER if `order_id` can come from client input.
+**Fix:**
+```python
+row = conn.execute("SELECT total_cents FROM orders WHERE id = ?", (order_id,)).fetchone()
+if row is None:
+    raise LookupError(f"order {order_id} not found")
+```
 
-## What's Good
-- Clean return structure with consistent dict format
-- Checking user existence before charging is correct
-- Delegating to payment_gateway is the right abstraction
+#### [M4] The test that catches M1 is skipped; the other test can't fail on a wrong total [verified]
+**Location:** `test_coupons.py:L23`, `test_coupons.py:L20`
+**Problem:** `test_exhausted_coupon_rejected` is skipped as "flaky", but with the skip
+removed it fails every run (`assert 1800.0 is None`): it is detecting M1, not flaking.
+`test_apply_coupon` asserts only `is not None`, so it passes for any total, right or wrong,
+and its 2000-cent order at 10% never produces a fractional result, so M2 goes unnoticed.
+**Risk:** The suite is green while the limit and rounding bugs ship.
+**Fix:** Remove the skip, assert exact values, and add a case with a fractional discount.
+On the current code, the unskipped `test_exhausted_coupon_rejected` fails on M1 and the new
+whole-cents test fails on M2; `test_apply_coupon` still passes but now pins the exact total
+and remaining uses. With the B1–M3 fixes applied, all three pass.
+```python
+def test_apply_coupon(conn):
+    assert apply_coupon(conn, 1, "SAVE10") == 1800
+    assert conn.execute("SELECT uses_left FROM coupons").fetchone() == (0,)
 
-## Verdict
-**REQUEST CHANGES** — Two critical security issues and a data integrity bug must be
-fixed before merge. This should not go to production in current form.
+
+def test_discount_stays_in_whole_cents(conn):
+    conn.execute("UPDATE orders SET total_cents = 999")
+    conn.execute("UPDATE coupons SET percent_off = 15")
+    assert apply_coupon(conn, 1, "SAVE10") == 849
+```
+
+### 🟡 MINOR
+
+#### [m1] `None` means two different failures
+**Location:** `coupons.py:L9`, `coupons.py:L12`
+**Problem:** Unknown and exhausted coupons both return `None`, so checkout cannot tell the
+user which one happened.
+**Risk:** Users get a generic "invalid coupon" for a code that is merely used up; support can't tell the cases apart.
+**Fix:** Return or raise distinct results (e.g., `CouponNotFound` / `CouponExhausted`) in
+whatever error style the project already uses.
+
+### 💭 NIT
+- `coupons.py:L4` — parameters are annotated but the return type isn't; add `-> int | None` once M2 makes the result an int.
+
+## Questions
+- Can `order_id` reach this function from client input without validation? If yes, M3 becomes a BLOCKER.
+- Where is it checked that the order belongs to the current user? Not visible here; if nothing checks it, anyone can discount other people's orders.
+- Applying SAVE10 twice to the same order compounded the discount (2000 → 1800.0 → 1620.0). Is one coupon per order the rule? If so, this needs a guard and becomes a MAJOR.
+- What rounding rule does the business want for discounts (half up, floor)? M2's fix assumes half up.
+
+## Checked OK
+- Performance: two single-row lookups by primary key (`coupons.code`, `orders.id` in the test schema), no loops or unbounded reads.
+- Secrets/logging: no credentials in code and nothing is logged.
+
+## What's good
+- The order lookup and both UPDATEs (L15, L20, L23) are already parameterized — B1's fix just follows the file's own pattern.
+- One `commit()` at the end shows the intent to write order and coupon together; M1's `with conn:` makes that intent actually hold on failure.

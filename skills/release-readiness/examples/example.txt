@@ -1,111 +1,156 @@
 # Example: /release-readiness
 
 ## User Input
-We're releasing v2.0 of our e-commerce platform next Thursday. Changes include:
-a new checkout flow, price recalculation engine rewrite, 3 DB migrations (add columns,
-add index, backfill), and dropping support for API v1. Expected traffic: Black Friday
-levels (~3x normal). Team: 5 engineers, 2 QA.
+We're releasing v2.0 of our e-commerce platform on Thursday 26 Nov 2026, 10:00 UTC.
+Black Friday is the next day; we expect ~3x normal traffic from Fri 27 Nov to Mon 30 Nov.
+
+Stack: Deployment `ecommerce-api` on Kubernetes (rolling update, no canary tooling),
+PostgreSQL 15, a feature-flag service that supports percentage rollout. Our ORM maps
+columns explicitly. Our migration tool runs each migration file inside a transaction.
+
+Changes:
+1. New checkout flow behind flag `checkout_v2` (default off). It creates orders with a
+   new status `awaiting_price_confirmation`; v1.x code does not know this status.
+2. Price recalculation engine rewrite, selected by `PRICING_ENGINE=v2` in ConfigMap
+   `ecommerce-config` (read as an env var at startup). Not behind a flag.
+3. Migrations:
+   M1 ALTER TABLE orders ADD COLUMN price_breakdown jsonb, ADD COLUMN pricing_engine_version smallint;
+   M2 CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders (status, created_at);
+   M3 UPDATE orders SET pricing_engine_version = 1;   -- ~40M rows, one statement
+4. Remove API v1 routes (/v1/*). Deprecation notice sent 1 Oct 2026. 3 of 5 partners
+   confirmed they moved to v2; 2 have not replied.
+
+Status: checkout flow QA-approved on staging. Price engine regression against 10k
+historical orders: pending, ETA Wed 25 Nov. Load test at 3x: not started. Rollback has
+never been rehearsed. On-call for Thu–Fri not assigned yet. Team: 5 engineers, 2 QA.
+
+Baselines (normal weekday peak, Grafana "Checkout" dashboard): ~900 checkouts/min,
+checkout completion 86%, payment failure 0.8%, API 5xx 0.08%, pricing p99 110 ms.
 
 ## Skill Output
 
 # Release Readiness: v2.0 E-Commerce Platform
 
-## Scope
-- **Changes**: New checkout flow, price engine rewrite, 3 DB migrations, API v1 sunset
-- **Risk level**: 🔴 HIGH — revenue-critical path, breaking changes, data migrations
-- **Blast radius**: All checkout flows, all integrations using API v1, full user base
+**Verdict**: NO-GO: four independent risky changes ship as one release the day before Black Friday, and the plan can neither reverse the checkout change cleanly nor detect wrong prices.
+**Window**: Thu 26 Nov 2026, 10:00 UTC (as requested) · **Risk**: High · **Deploy mechanism**: Kubernetes rolling update + percentage feature flags
+**Blast radius**: every checkout and every price shown, at up to 3x traffic over Fri 27 – Mon 30 Nov; 2 partner integrations on API v1
+**Assumptions**: rollback triggers below are proposed values derived from the given baselines (marked `assumed`); whoever owns the go/no-go must confirm them. Customer-support briefing status was not given (UNKNOWN).
 
-## Pre-Release Checklist
+## Change Inventory
+| # | Change | Type | Reversible? | Mixed-version safe? |
+|---|--------|------|-------------|---------------------|
+| 1 | Checkout v2 (flag `checkout_v2`) | code + flag | Flag: yes. Code rollback: no. v1.x can't process `awaiting_price_confirmation` orders | No: new status is unknown to v1.x pods during the rolling update |
+| 2 | Pricing engine v2 (ConfigMap `PRICING_ENGINE`) | code + config | Partly: `kubectl rollout undo` does not revert the ConfigMap | Yes for schema; prices may differ between pods mid-rollout |
+| 3a | M1 add `price_breakdown`, `pricing_engine_version` | schema (expand) | Yes: leave columns in place | Yes: ORM maps columns explicitly, old code ignores them |
+| 3b | M2 index CONCURRENTLY | schema (expand) | Yes: `DROP INDEX CONCURRENTLY` | Yes |
+| 3c | M3 40M-row single UPDATE | data | Not needed (see finding) | Yes, but long-running |
+| 4 | Remove /v1/* routes | API contract | Technically yes (redeploy), but partner calls fail in the meantime | No: 2 partners unconfirmed |
 
-### Code & Testing
-- [x] New checkout flow QA-approved on staging
-- [ ] Price engine: regression tested against 10k historical orders — **PENDING** (ETA Wed)
-- [ ] Load test at 3x normal traffic — **NOT STARTED** (must complete before Thursday)
-- [ ] API v1 sunset: confirm all known integrations migrated to v2
+## Findings
+### 🔴 BLOCKER: Release window collides with the year's peak
+**Change**: timing
+**Problem**: 100% exposure would be reached on Thu 26 Nov, and the first 3x day starts hours later. No normal peak passes at full exposure first, and the load test at 3x has not started. A defect found on Friday gets fixed at peak, with no on-call assigned yet.
+**Fix**: pick one of the following. Whoever owns the go/no-go makes the call.
+(a) Move v2.0 to Tue 1 Dec or later (after Cyber Monday).
+(b) This week, ship only M1+M2, which are additive and reversible. Move everything else to after the peak.
+(c) Ship the code dark (both flags at 0%) this week and turn nothing on until after the peak. This still adds deploy risk at peak, so it is weaker than (a) or (b).
 
-### Database Migrations
-- [ ] Migration 1 (add columns): Tested on staging DB with production-size dataset — confirm no table locks
-- [ ] Migration 2 (add index): Tested with CONCURRENTLY flag — confirm duration < 5 min
-- [ ] Migration 3 (backfill): Tested in batches — confirm throughput and estimated runtime
-- [ ] All migrations: rollback procedures documented and tested
+### 🔴 BLOCKER: Checkout rollback strands orders
+**Change**: 1
+**Problem**: once `checkout_v2` creates `awaiting_price_confirmation` orders, redeploying v1.x leaves those orders in a status v1.x doesn't know. The same happens during the rolling update, while v1.x pods still serve traffic. Customers who paid could have orders that never progress.
+**Fix**: make turning off `checkout_v2` the primary rollback and keep the v2.0 code running. It still knows the status, so in-flight orders finish. Before any code rollback is allowed, ship a v1.x patch that tolerates the status (N-1 compatibility), or write and test a reconciliation script that moves these orders to a v1.x status.
 
-### Observability
-- [ ] Dashboard updated with new checkout funnel metrics
-- [ ] Alerts configured: checkout_error_rate > 1%, payment_failure_rate > 0.5%
-- [ ] Price engine: latency alert if p99 > 200ms
+### 🔴 BLOCKER: Pricing rewrite has no gradual exposure and no correctness signal
+**Change**: 2
+**Problem**: `PRICING_ENGINE=v2` switches every pod as the rolling update reaches it, and no gate is possible. Wrong prices are "fast and successful": error rate and latency stay green while orders are mispriced. The 10k-order regression run is still pending.
+**Fix**: move engine selection behind a percentage flag. Run v2 in shadow mode first: compute both prices, serve v1, and emit a `price_mismatch` metric. Do not serve v2 prices until the regression passes and mismatches are explained.
 
-### Communication
-- [ ] API v1 deprecation notice sent to all integration partners (at least 2 weeks ago — check)
-- [ ] On-call team briefed and available Thursday + Friday
-- [ ] Customer support briefed on new checkout UX changes
-- [ ] Rollback runbook distributed to all engineers
+### 🔴 BLOCKER: API v1 removal breaks unconfirmed partners
+**Change**: 4
+**Problem**: 2 of 5 partners have not confirmed. If they still call /v1/*, their integrations fail at peak, and a redeploy can't undo orders they failed to submit.
+**Fix**: take route removal out of this release. Check the /v1/* access logs for remaining callers, get written confirmation from both partners, then remove the routes in a separate low-traffic release.
 
-## 🚫 BLOCKERS (Must resolve before release)
+### 🔴 BLOCKER: M3 is a 40M-row single-transaction UPDATE, and it isn't needed
+**Change**: 3c
+**Problem**: one statement holds row locks on every order until it commits, blocking concurrent order updates, and it bloats the table. On the orders table, in the release window, that is an outage-class step on the checkout path.
+**Fix**: drop M3. Change M1 to `ADD COLUMN pricing_engine_version smallint NOT NULL DEFAULT 1`. On PostgreSQL 11+ this is metadata-only, with no rewrite and no backfill. Rows from old code get 1, and v2 code writes 2. Run DDL with `SET lock_timeout`. Route the full review to `migration-safety`.
 
-1. **Price engine regression tests not complete** — Cannot release a rewritten pricing
-   engine without full regression validation. ETA Wednesday; if it slips, release must slip.
+### 🟠 MAJOR: M2 will fail under the migration tool
+**Change**: 3b
+**Problem**: `CREATE INDEX CONCURRENTLY cannot run inside a transaction block`, and the tool wraps each file in a transaction.
+**Fix**: mark M2 non-transactional using the tool's own mechanism. If it is interrupted, check `pg_index.indisvalid` and drop any INVALID index before retrying.
 
-2. **Load test not started** — 3x traffic on Black Friday with a new checkout flow is
-   extremely high risk. Load test must complete and pass before Thursday.
+### 🟠 MAJOR: Code rollback does not revert config
+**Change**: 2
+**Problem**: `kubectl rollout undo deployment/ecommerce-api` restores the previous pod template only. `ecommerce-config` keeps `PRICING_ENGINE=v2`. (This goes away if the BLOCKER fix moves pricing to a flag.)
+**Fix**: until then, the rollback runbook restores the ConfigMap first, then restarts the pods, because env vars are read only at startup.
 
-3. **API v1 partner migration unconfirmed** — Dropping v1 without confirming all partners
-   have migrated will break live integrations. Get written confirmation from each partner.
+### 🟠 MAJOR: Rollback unrehearsed, on-call unassigned
+**Change**: process
+**Problem**: the first time anyone runs the rollback would be in production, and it isn't known who would run it.
+**Fix**: rehearse flag-off and code rollback on staging and record how long each takes. Assign primary and secondary on-call for the release day and every peak day.
+
+### 🟡 MINOR: No signal for stuck orders
+**Change**: 1
+**Problem**: no metric shows orders sitting in `awaiting_price_confirmation`.
+**Fix**: add a gauge of order count by status, plus the age of the oldest order in that status.
+
+## Pre-Release Checks
+| Check | Status (DONE / PENDING / NOT STARTED / UNKNOWN) | Owner | Evidence |
+|-------|------------------------------------------------|-------|----------|
+| Checkout v2 QA on staging | DONE | QA | stated in input |
+| Price regression, 10k historical orders | PENDING (ETA Wed 25 Nov) | not named | stated in input |
+| Load test at 3x | NOT STARTED | not named | stated in input |
+| Rollback rehearsal (flag-off + code) | NOT STARTED | not named | "never rehearsed" |
+| On-call assigned Thu–Mon | NOT STARTED | not named | "not assigned yet" |
+| Partner v1 migration confirmed | PENDING (3/5) | not named | 2 no reply |
+| Customer support briefed on new checkout | UNKNOWN | not named | not stated |
 
 ## Rollout Plan
-
-```
-Thursday 10:00 UTC — DB migrations (run before code deploy)
-  ├── Migration 1: Add columns (~2 min, no lock expected)
-  ├── Migration 2: Add index CONCURRENTLY (~8 min, monitor)
-  └── Migration 3: Backfill in batches (monitor for ~30 min)
-
-Thursday 10:45 UTC — Code deploy
-  ├── Deploy to 10% canary
-  ├── Monitor: checkout_error_rate, payment_success_rate, price_latency (15 min)
-  ├── If healthy → 50% (monitor 15 min)
-  └── If healthy → 100%
-
-Thursday 11:30 UTC — API v1 sunset
-  └── Only after 100% rollout confirmed healthy
-```
+Assumes option (a) or (b), with pricing moved behind a flag. T0 = the new release day.
+1. M1 (with DEFAULT) + M2, as their own deploy, no later than T0-2 days: exposure none (schema only) · bake until one normal peak has passed · proceed if migrations completed, no lock-timeout errors, API 5xx ≤ 0.2%.
+2. v2.0 code, both flags at 0%, rolling update: 100% of pods, 0% of users on new paths · bake 30 min · proceed if API 5xx ≤ 0.2% and payment failure ≤ 1.6%.
+3. Pricing shadow mode: 100% computed, 0% served · bake one full weekday peak · proceed if `price_mismatch` ≤ 0.1% and every mismatch class is explained.
+4. `checkout_v2` 5%: bake 30 min during peak (≈45 checkouts/min → ~1,350 checkouts, ~11 failures expected at the 0.8% baseline, ~22 if the rate doubled) · proceed if canary-cohort payment failure ≤ 1.6% and completion ≥ 80%.
+5. `checkout_v2` 25% → 50% → 100%: bake 30 min per step · same gates.
+6. Pricing served 5% → 25% → 100%: bake 30 min per step · same gates + pricing p99 ≤ 250 ms.
+7. API v1 removal: a separate later release, after both partners confirm and /v1/* traffic is zero.
 
 ## Rollback Plan
+**Triggers**: API 5xx > 0.2% for 5 min · payment failure > 1.6% for 15 min · checkout completion < 80% for 15 min · pricing p99 > 250 ms for 10 min · `price_mismatch` > 0.1% for 15 min (all `assumed`) · **Decision owner**: release on-call primary (to be assigned), with no approval meeting needed
 
-**Trigger**: checkout_error_rate > 2% OR payment_failure_rate > 1% sustained 5 minutes
-
-**Code rollback** (5 min):
-```bash
-kubectl rollout undo deployment/ecommerce-api
-# Validate: curl /health → old version header
-```
-
-**Migration rollback**:
-- Migration 1 (add columns): `ALTER TABLE orders DROP COLUMN IF EXISTS ...` — safe
-- Migration 2 (add index): `DROP INDEX CONCURRENTLY ...` — safe, ~2 min
-- Migration 3 (backfill): No rollback needed — backfill is additive
-
-**API v1 rollback**: Re-enable v1 routes in feature flag — instant.
-
-**Data impact**: New orders created during v2 window are compatible with v1 code.
-No data loss on rollback.
+| Change | Rollback action | Time | Data impact |
+|--------|-----------------|------|-------------|
+| 1 Checkout v2 | Set `checkout_v2` to 0%; keep v2.0 code running | measure in rehearsal | `awaiting_price_confirmation` orders keep being processed by v2.0 code |
+| 1 Checkout v2 (code) | Only after the N-1 patch or the reconciliation script exists: `kubectl rollout undo deployment/ecommerce-api`, then `kubectl rollout status deployment/ecommerce-api` | measure in rehearsal | stranded orders unless reconciled |
+| 2 Pricing v2 | Set the pricing flag to 0% (after the fix). Until then: restore `PRICING_ENGINE` in `ecommerce-config`, then `kubectl rollout restart deployment/ecommerce-api` | measure in rehearsal | orders already priced by v2 keep v2 prices; list them via `pricing_engine_version = 2` for review |
+| 3a M1 | None. Leave the columns in place | 0 | none; do not drop columns v2 has written to |
+| 3b M2 | `DROP INDEX CONCURRENTLY idx_orders_status_created` only if the index itself causes harm | measure in rehearsal | none |
 
 ## Monitoring
+| Metric | Baseline | Rollback trigger | Window | Source |
+|--------|----------|------------------|--------|--------|
+| Checkouts/min | ~900 at weekday peak | none (context for bake sizing) | – | Grafana "Checkout" |
+| Checkout completion | 86% | < 80% (`assumed`) | 15 min | Grafana "Checkout" |
+| Payment failure | 0.8% | > 1.6% (`assumed`, 2x baseline) | 15 min | Grafana "Checkout" |
+| API 5xx | 0.08% | > 0.2% (`assumed`) | 5 min | Grafana "Checkout" |
+| Pricing p99 | 110 ms | > 250 ms (`assumed`) | 10 min | Grafana "Checkout" |
+| `price_mismatch` (new) | none yet | > 0.1% (`assumed`) | 15 min | new panel, to be built |
+| Orders in `awaiting_price_confirmation` (new) | none yet | to be set after shadow week | – | new panel, to be built |
 
-| Metric | Normal | Alert |
-|--------|--------|-------|
-| checkout_completion_rate | > 85% | < 75% |
-| payment_success_rate | > 99% | < 97% |
-| price_engine_latency p99 | < 100ms | > 300ms |
-| api_error_rate | < 0.1% | > 1% |
-| db_migration_lock_wait | 0 | > 0 |
+## Communication
+- **Before**: both unconfirmed partners are contacted directly (not just the 1 Oct notice) about the v1 timeline. Support gets a briefing on the new checkout UX and the new order status. On-call gets the runbook, the flag names, and the dashboard.
+- **During**: one release channel, with an update at each rollout stage and on every gate decision.
+- **After**: a completion notice to support and partners, release notes, and a cleanup date for both flags.
 
-## Go / No-Go Assessment
-
-**Current status: ⛔ NOT READY**
-
-Blocking items:
-1. Price regression tests must complete and pass (ETA Wednesday)
-2. Load test must run and pass (start immediately)
-3. Written confirmation from all API v1 partners
-
-**Re-evaluate Thursday 08:00 UTC** — if all blockers resolved, release proceeds at 10:00 UTC.
+## Go / No-Go
+- **To reach GO**:
+  1. Choose option (a) or (b) for the window (whoever owns the go/no-go).
+  2. Move pricing behind a flag, add shadow mode and the `price_mismatch` metric (engineering; before T0).
+  3. Price regression passes on 10k orders (QA; before shadow mode).
+  4. Ship the N-1 patch or a tested reconciliation script for `awaiting_price_confirmation` (engineering; before T0).
+  5. Take API v1 removal out of this release (not named; now).
+  6. Fold M3 into M1 and make M2 non-transactional (engineering; before step 1).
+  7. Pass the 3x load test, rehearse rollback, assign on-call (engineering + QA; before T0).
+  8. Confirm the proposed triggers (whoever owns the go/no-go; before T0).
+- **Checkpoint**: go/no-go call at T0-1 day with whoever owns the go/no-go and the on-call primary. Every item above must show evidence, not "in progress".

@@ -1,93 +1,187 @@
 # Example: /algorithm-review
 
-## User Input (code to review)
+## User Input
+
+Review `reports/orders.py` for algorithm problems. Context:
+- Nightly report job. `orders` has up to 50,000 rows, `products` about 2,000 rows.
+  Both are loaded from the database; every order dict always has int `product_id`
+  and `user_id`, every product dict always has int `id`.
+- `transactions` has about 200,000 rows; `day` is an int (days since epoch) and
+  `amount` is an int in cents.
+- The dashboard calls `calculate_daily_revenue` about 30 times per page load with
+  different ranges, always on the same `transactions` list.
 
 ```python
-def find_duplicate_orders(orders):
-    duplicates = []
-    for i in range(len(orders)):
-        for j in range(i + 1, len(orders)):
-            if orders[i]["product_id"] == orders[j]["product_id"] and \
-               orders[i]["user_id"] == orders[j]["user_id"]:
-                duplicates.append(orders[j])
-    return duplicates
-
-
-def get_top_products(orders, products):
-    result = []
-    for product in products:
-        count = 0
-        for order in orders:
-            if order["product_id"] == product["id"]:
-                count += 1
-        result.append({"product": product, "count": count})
-    result.sort(key=lambda x: x["count"], reverse=True)
-    return result[:10]
-
-
-def calculate_daily_revenue(transactions, start_day, end_day):
-    total = 0
-    for t in transactions:
-        if start_day <= t["day"] <= end_day:
-            total += t["amount"]
-    return total
+ 1  def find_duplicate_orders(orders):
+ 2      duplicates = []
+ 3      for i in range(len(orders)):
+ 4          for j in range(i + 1, len(orders)):
+ 5              if orders[i]["product_id"] == orders[j]["product_id"] and \
+ 6                 orders[i]["user_id"] == orders[j]["user_id"]:
+ 7                  duplicates.append(orders[j])
+ 8      return duplicates
+ 9
+10
+11  def get_top_products(orders, products):
+12      result = []
+13      for product in products:
+14          count = 0
+15          for order in orders:
+16              if order["product_id"] == product["id"]:
+17                  count += 1
+18          result.append({"product": product, "count": count})
+19      result.sort(key=lambda x: x["count"], reverse=True)
+20      return result[:10]
+21
+22
+23  def calculate_daily_revenue(transactions, start_day, end_day):
+24      total = 0
+25      for t in transactions:
+26          if start_day <= t["day"] <= end_day:
+27              total += t["amount"]
+28      return total
 ```
 
 ## Skill Output
 
-# Algorithm Review: Order Processing Module
+# Algorithm Review: reports/orders.py
 
-## Finding 1: Duplicate Detection — Hash Set
-**Current**: O(n²) — nested loop comparing every pair
-**Optimized**: O(n)
-**Algorithm**: Frequency Map / Hash Set
+**Scale**: from input — orders n = 50,000, products m = 2,000 (nightly); transactions t = 200,000, 30 range queries per page load
+**Verdict**: Optimize now — two nightly functions are quadratic-class at the stated scale; the revenue query is a smaller win.
 
+## Findings
+
+### 🟠 MAJOR Pairwise duplicate scan compares every pair of orders
+**Location**: reports/orders.py:1–8 (`find_duplicate_orders`)
+**Signal**: nested loop over the same list to find equal keys
+**Current**: O(n²) — n(n−1)/2 = 1,249,975,000 pair comparisons at n = 50,000
+**Proposed**: expected O(n + D), D = number of matching pairs (= output size) — hash map from key to positions
+
+Before:
 ```python
+for i in range(len(orders)):
+    for j in range(i + 1, len(orders)):
+        if orders[i]["product_id"] == orders[j]["product_id"] and \
+           orders[i]["user_id"] == orders[j]["user_id"]:
+            duplicates.append(orders[j])
+```
+
+After:
+```python
+from collections import defaultdict
+
 def find_duplicate_orders(orders):
-    seen = set()
+    positions = defaultdict(list)   # (product_id, user_id) -> indices, ascending
+    rank = []                       # rank[i] = position of i inside its key's list
+    for i, o in enumerate(orders):
+        same = positions[(o["product_id"], o["user_id"])]
+        rank.append(len(same))
+        same.append(i)
     duplicates = []
-    for order in orders:
-        key = (order["product_id"], order["user_id"])
-        if key in seen:
-            duplicates.append(order)
-        else:
-            seen.add(key)
+    for i, o in enumerate(orders):
+        later = positions[(o["product_id"], o["user_id"])][rank[i] + 1:]
+        duplicates.extend(orders[j] for j in later)
     return duplicates
 ```
 
-With 10,000 orders: ~50M comparisons → ~10K hash lookups. Significant.
+**Edge cases checked**:
+- Multiplicity: the original appends `orders[j]` once for every earlier match, so a key seen k times yields k(k−1)/2 entries (3 copies → 2nd, 3rd, 3rd). The rewrite emits the same entries. A `seen`-set version would emit each extra copy once — different output, rejected.
+- Ordering: output is grouped by i, then by ascending j, same as the nested loop.
+- Identity: the same dict objects are returned; the input is not mutated.
+- Empty and single-order input return `[]`.
+- Assumption (from input): both keys are always present and are ints. The original reads `user_id` only when `product_id` matches; the rewrite reads it for every order, so a missing `user_id` would raise `KeyError` only in the rewrite.
+- D can still be O(n²) if one key repeats thousands of times — no behavior-preserving rewrite avoids emitting the output.
 
-## Finding 2: Top Products — Frequency Map
-**Current**: O(n × m) — for each product, scan all orders
-**Optimized**: O(n + m)
-**Algorithm**: Frequency Map + Heap (or sort)
+**Equivalence**: ran old vs new on 6 hand-picked inputs (empty, one order, 5 identical keys, all distinct, interleaved triples, swapped product/user ids) plus 3,000 random lists (0–59 orders, few keys so collisions are frequent); outputs identical element-for-element (`is`) in every case.
+**Behavior changes / questions**: Is emitting the third copy twice intended? If callers want "every order after the first, once", that is a behavior change — confirm with the owner before switching to a `seen` set.
 
+### 🟠 MAJOR Top products re-scans all orders for every product
+**Location**: reports/orders.py:11–20 (`get_top_products`)
+**Signal**: inner loop over `orders` inside a loop over `products` just to count
+**Current**: O(n·m) — 50,000 × 2,000 = 100,000,000 comparisons, plus O(m log m) sort
+**Proposed**: expected O(n) + O(m log m) — frequency map (`Counter`), then the same sort
+
+Before:
+```python
+for product in products:
+    count = 0
+    for order in orders:
+        if order["product_id"] == product["id"]:
+            count += 1
+    result.append({"product": product, "count": count})
+```
+
+After:
 ```python
 from collections import Counter
 
 def get_top_products(orders, products):
-    product_count = Counter(o["product_id"] for o in orders)
-    product_map = {p["id"]: p for p in products}
-    top_ids = product_count.most_common(10)
-    return [{"product": product_map[pid], "count": c} for pid, c in top_ids]
+    counts = Counter(o["product_id"] for o in orders)
+    result = [{"product": p, "count": counts[p["id"]]} for p in products]
+    result.sort(key=lambda x: x["count"], reverse=True)
+    return result[:10]
 ```
 
-One pass to count, one pass to map. Counter.most_common uses a heap internally — O(n log 10).
+**Edge cases checked**:
+- Zero counts: `Counter` returns 0 for a missing key, so products with no orders still appear, as in the original.
+- Unknown `product_id` in orders: counted but never looked up, i.e. ignored as before (no `KeyError`).
+- Ties: the list is built in `products` order and sorted with the same stable sort, so equal counts keep their original order.
+- Duplicate product ids in `products`: each entry gets the full count, as before.
+- Fewer than 10 products and empty inputs: same slice semantics.
+- Assumption (from input): every order has `product_id`. With `products` empty, the original never reads orders; the rewrite does.
 
-## Finding 3: Daily Revenue — Prefix Sum
-**Current**: O(n) per query — scans all transactions each time
-**Optimized**: O(1) per query after O(n) preprocessing
-**Algorithm**: Prefix Sum
+**Equivalence**: ran old vs new on 28 edge combinations (7 order lists × 4 product lists, including empty, duplicate ids, 15 products with ties) plus 3,000 random cases with unknown ids and duplicates; same product objects and counts, in the same order, every time.
+**Behavior changes / questions**: None. (If `orders` and `products` are loaded only to be counted, a `GROUP BY` in the query may remove this code entirely — that is a query-design question for `db-design`.)
 
+### 🟡 MINOR Every revenue query re-scans all transactions
+**Location**: reports/orders.py:23–28 (`calculate_daily_revenue`)
+**Signal**: the same full scan repeated for each of ~30 range queries on unchanged data
+**Current**: O(t) per query — 30 × 200,000 = 6,000,000 row checks per page load
+**Proposed**: O(t + d log d) once per page load, then O(log d) per query (d = distinct days ≤ t) — prefix sums over sorted days + binary search
+
+Before:
 ```python
-def build_revenue_index(transactions):
-    daily = {}
-    for t in transactions:
-        daily[t["day"]] = daily.get(t["day"], 0) + t["amount"]
-    return daily
-
-def calculate_daily_revenue(daily_index, start_day, end_day):
-    return sum(daily_index.get(d, 0) for d in range(start_day, end_day + 1))
+total = 0
+for t in transactions:
+    if start_day <= t["day"] <= end_day:
+        total += t["amount"]
+return total
 ```
 
-If `calculate_daily_revenue` is called repeatedly with different ranges, precompute once, query many. For single call, original is fine.
+After:
+```python
+from bisect import bisect_left, bisect_right
+from collections import defaultdict
+
+def build_revenue_index(transactions):
+    daily = defaultdict(int)
+    for t in transactions:
+        daily[t["day"]] += t["amount"]
+    days = sorted(daily)
+    prefix = [0]
+    for d in days:
+        prefix.append(prefix[-1] + daily[d])
+    return days, prefix
+
+def calculate_daily_revenue(index, start_day, end_day):
+    days, prefix = index
+    lo = bisect_left(days, start_day)
+    hi = bisect_right(days, end_day)
+    return prefix[hi] - prefix[lo] if hi > lo else 0
+```
+
+**Edge cases checked**:
+- `start_day > end_day`: without the `hi > lo` guard the difference is negative; with it the result is 0, as in the original.
+- Ranges outside the data, single-day ranges, empty `transactions`: all return the same value, including 0.
+- Negative amounts (refunds) and several rows on one day: summed identically.
+- Exactness depends on int cents (from input). With float amounts the additions happen in a different order: amounts 0.1, 0.2, 0.3 on days 1–3, queried for days 2–3, give 0.5 in the original but 0.5000000000000001 via prefix sums, so the rewrite would not be equivalent.
+- Staleness: the index must be rebuilt whenever `transactions` changes; build it once per page load, not once per process.
+- Not O(1) per query: `day` is sparse, so the lookup is a binary search. A dense array over [min_day, max_day] would give O(1) at the cost of memory for the whole span.
+
+**Equivalence**: ran old vs new on 8 transaction lists × every (start, end) pair in −8..44 (22,472 queries, including inverted and out-of-range bounds) plus 2,000 random lists × 20 random ranges; identical int results in every case.
+**Behavior changes / questions**: Caller API changes (build the index once, then query). The per-query result does not change.
+
+## Top Priorities
+1. Replace the pairwise scan in `find_duplicate_orders`, and ask the owner whether the repeated third copy is intended.
+2. Count with a `Counter` in `get_top_products`.
+3. Add the revenue index if dashboard latency matters — measure first (`performance-review`); it saves about 30× the row checks per page load.

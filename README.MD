@@ -51,25 +51,25 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 | `architect` | System architecture, boundaries, data flow, tradeoffs, rollout plans |
 | `code-review` | Bugs, maintainability, correctness, edge cases, architecture issues |
 | `code-audit` | Full 20-dimension audit — architecture, SOLID, patterns, perf, security, DI, async, DB, API, domain — scored with fixes |
-| `debug` | Failures — symptoms, root cause, validation steps, concrete fixes |
-| `fix-bug` | Deep bug investigation — gathers context, traces root cause, proposes verified fix |
+| `debug` | Reproducible failures — ranked hypotheses eliminated by experiment, proven root cause, minimal fix, regression test |
+| `fix-bug` | Entry point for low-context bug reports — intake, investigation, reproduction, fix with explicit confidence (hands off to `debug` when several causes remain) |
 | `refactor` | Simplify/restructure code without changing behavior — anti-patterns included |
-| `test-writer` | Critical flows, edge cases, regression risks |
+| `test-writer` | Test plans and test code — expected values derived from code/spec, edge cases, dead-code findings, tests actually run |
 | `security-review` | Security risks, trust boundaries, secrets handling, abuse cases |
 | `docs-writer` | Setup guides, ADRs, API references, usage instructions |
 | `api-design` | Resources, contracts, error handling, versioning, examples |
 | `algorithm-review` | Algorithm optimization, data structures, sorting/search improvements |
-| `mastery` | Senior-level engineering principles applied automatically to any code |
-| `db-design` | Schema, indexing, constraints, query patterns, migration strategy |
-| `migration-safety` | Safe migrations — rollback, backward compatibility, observability |
-| `sre-engineering` | Production incidents, reliability, on-call triage, post-mortems |
+| `mastery` | Baseline senior engineering defaults when writing code — yields to task-specific skills and project conventions |
+| `db-design` | Schema, keys, constraints, multi-tenant isolation, indexes derived from queries (rollout goes to `migration-safety`) |
+| `migration-safety` | Safe migrations — lock behavior, `lock_timeout`, expand–contract, batched backfills, rollback, go/no-go |
+| `sre-engineering` | Live incident response, SLIs/SLOs, error budgets, burn-rate alerting, blameless post-mortems |
 | `release-readiness` | Release risk, rollout plan, tested rollback, monitoring, go/no-go |
 | `performance-review` | Bottlenecks, profiling hotspots, measurement, optimization tradeoffs |
 | `pr-review` | PR scope, risks, test gaps, change clarity, merge readiness |
 | `changelog` | User-facing and developer-facing changelog entries from commits |
 | `ui-design` | Design tokens, color palettes (light/dark), typography, spacing, UX, SEO |
 | `document-review` | Strict document review — clarity, logic, consistency, accuracy, actionability, reader experience |
-| `dotnet-code-review` | Multi-dimensional .NET / C# code review — blast radius, correctness, security, performance, maintainability, testability |
+| `dotnet-code-review` | .NET / C# code review — blast radius, .NET slop scan, async/DI/EF Core/ASP.NET Core pitfalls, severity-tagged verdict |
 | `dotnet-code-refactor` | Safe .NET / C# refactoring — code smells, risk classification, characterization tests, smallest-change-at-a-time (modifies code) |
 
 ---

@@ -1,4 +1,4 @@
-# Example: /api-design
+# Example: /api-design (design mode)
 
 ## User Input
 Design a REST API for a task management system. Users can create projects,
@@ -10,156 +10,203 @@ Need to support filtering tasks by status and assignee. Mobile and web clients.
 # API Design: Task Management
 
 ## Overview
-CRUD API for projects and tasks with assignment and filtering support.
-Primary consumers: React web app, React Native mobile app.
+- **Purpose**: Create projects, add tasks to them, assign tasks to project members, mark tasks done, and list tasks filtered by status and assignee.
+- **Consumers**: Mobile and web clients.
+- **Assumptions** (not in the input — confirm or correct):
+  - Both clients are first-party (built by the same team), so they share one auth flow and upgrade on our schedule.
+  - "Team member" = a member of the project; a task can only be assigned to a member of its project.
+  - Two project roles: `owner` (creator; manages members, deletes the project) and `member`.
+  - Task statuses beyond "done" are `todo` and `in_progress`.
+  - Auth is OAuth 2.0 bearer tokens issued by an existing identity provider.
+  - Rate limit of 600 requests/minute per token; idempotency keys kept 24 h.
 
-## Base URL & Auth
-- Base: `https://api.example.com/v1`
-- Auth: Bearer token (JWT), required on all endpoints
-- Versioning: URL prefix (`/v1`)
+## Conventions
+- **Base URL & versioning**: `https://api.example.com/v1` — major version in the URL.
+- **Auth**: `Authorization: Bearer <token>` on every endpoint (RFC 6750); no public endpoints. Authorization is by project role; every `project_id`/`task_id` is checked against the caller's memberships (404 if the caller is not a member, so project existence is not leaked).
+- **Format**: `application/json` requests/responses, `application/merge-patch+json` for PATCH, `application/problem+json` for errors; snake_case fields; opaque string IDs (`proj_…`, `task_…`, `usr_…`); RFC 3339 UTC timestamps. Clients must ignore unknown response fields.
 
 ## Resources
-
 ### Projects
+| Method | Path | Description | Auth (scope) | Idempotent | Success |
+|--------|------|-------------|--------------|------------|---------|
+| GET | /projects | List caller's projects | any user | Yes | 200 |
+| POST | /projects | Create project (caller becomes owner) | any user | With `Idempotency-Key` | 201 + Location |
+| GET | /projects/{project_id} | Get project | member | Yes | 200 |
+| PATCH | /projects/{project_id} | Rename/describe project | owner | Yes (merge patch); `If-Match` required | 200 |
+| DELETE | /projects/{project_id} | Delete project | owner | Yes | 204 |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /projects | List user's projects |
-| POST | /projects | Create project |
-| GET | /projects/{id} | Get project |
-| PATCH | /projects/{id} | Update project |
-| DELETE | /projects/{id} | Archive project |
-| GET | /projects/{id}/tasks | List project tasks (filterable) |
+**Fields**: `id` — string, read-only; `name` — string, required, 1–100 chars (assumed limit); `description` — string, optional; `created_at`, `updated_at` — timestamp, read-only.
+
+### Members
+| Method | Path | Description | Auth (scope) | Idempotent | Success |
+|--------|------|-------------|--------------|------------|---------|
+| GET | /projects/{project_id}/members | List members | member | Yes | 200 |
+| PUT | /projects/{project_id}/members/{user_id} | Add member; no request body, always added with role `member` (no-op if already a member) | owner | Yes | 201 new / 200 existing |
+| DELETE | /projects/{project_id}/members/{user_id} | Remove member | owner | Yes | 204 |
+
+**Fields**: `user_id` — string; `role` — `owner` | `member`; `added_at` — timestamp.
 
 ### Tasks
+| Method | Path | Description | Auth (scope) | Idempotent | Success |
+|--------|------|-------------|--------------|------------|---------|
+| GET | /projects/{project_id}/tasks | List tasks; filter by `status`, `assignee_id` | member | Yes | 200 |
+| POST | /projects/{project_id}/tasks | Create task | member | With `Idempotency-Key` | 201 + Location |
+| GET | /tasks/{task_id} | Get task | member of task's project | Yes | 200 |
+| PATCH | /tasks/{task_id} | Update title, status, assignee | member of task's project | Yes (merge patch); `If-Match` required | 200 |
+| DELETE | /tasks/{task_id} | Delete task | member of task's project | Yes | 204 |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | /projects/{project_id}/tasks | Create task |
-| GET | /tasks/{id} | Get task |
-| PATCH | /tasks/{id} | Update task (status, assignee, etc.) |
-| DELETE | /tasks/{id} | Delete task |
+**Fields**: `id` — string, read-only; `project_id` — string, read-only; `title` — string, required, 1–200 chars (assumed limit); `description` — string, optional; `status` — `todo` | `in_progress` | `done`, default `todo`; `assignee_id` — string or null, must be a project member; `created_at`, `updated_at` — timestamp, read-only.
 
-### Members (project membership)
+## Request/Response Examples
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | /projects/{id}/members | List project members |
-| POST | /projects/{id}/members | Add member |
-| DELETE | /projects/{id}/members/{user_id} | Remove member |
-
-## Request / Response Examples
-
-### Create Task
+### Create a task (retry-safe)
 ```http
-POST /v1/projects/proj_abc123/tasks
-Authorization: Bearer {token}
+POST /v1/projects/proj_8Kd1/tasks HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/json
+Idempotency-Key: 5f0c2a4e-9b1d-4c3a-8e7f-2d6b1a9c0e34
+
+{ "title": "Implement login page", "assignee_id": "usr_4Tz9" }
+```
+```http
+HTTP/1.1 201 Created
+Location: /v1/tasks/task_7Qm2
+ETag: "1"
 Content-Type: application/json
 
 {
+  "id": "task_7Qm2",
+  "project_id": "proj_8Kd1",
   "title": "Implement login page",
-  "description": "Use the Figma designs from the shared drive",
-  "assignee_id": "usr_xyz789",
-  "due_date": "2024-02-15",
-  "priority": "high"
+  "description": null,
+  "status": "todo",
+  "assignee_id": "usr_4Tz9",
+  "created_at": "2026-09-20T08:00:00Z",
+  "updated_at": "2026-09-20T08:00:00Z"
 }
 ```
+A retry with the same key and body returns the same 201 response without creating a second task.
 
-**Response 201:**
-```json
-{
-  "data": {
-    "id": "task_def456",
-    "title": "Implement login page",
-    "description": "Use the Figma designs from the shared drive",
-    "status": "todo",
-    "priority": "high",
-    "assignee": {
-      "id": "usr_xyz789",
-      "name": "Jane Doe",
-      "avatar_url": "https://cdn.example.com/avatars/jane.jpg"
-    },
-    "project_id": "proj_abc123",
-    "due_date": "2024-02-15",
-    "created_at": "2024-01-15T10:30:00Z",
-    "updated_at": "2024-01-15T10:30:00Z"
-  }
-}
-```
-
-### List Tasks (with filters)
+### List tasks with filters
 ```http
-GET /v1/projects/proj_abc123/tasks?status=in_progress&assignee_id=usr_xyz789&page=1&per_page=20
-Authorization: Bearer {token}
+GET /v1/projects/proj_8Kd1/tasks?status=in_progress&assignee_id=usr_4Tz9&limit=1 HTTP/1.1
+Authorization: Bearer <token>
 ```
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
 
-**Response 200:**
-```json
 {
   "data": [
-    { "id": "task_def456", "title": "...", "status": "in_progress", ... }
+    { "id": "task_7Qm2", "project_id": "proj_8Kd1", "title": "Implement login page", "description": null,
+      "status": "in_progress", "assignee_id": "usr_4Tz9",
+      "created_at": "2026-09-20T08:00:00Z", "updated_at": "2026-09-21T09:15:00Z" }
   ],
-  "meta": {
-    "total": 42,
-    "page": 1,
-    "per_page": 20,
-    "next_cursor": "eyJpZCI6InRhc2tfZ2hpNzg5In0="
-  }
+  "next_cursor": "eyJjcmVhdGVkX2F0IjoiMjAyNi0wOS0yMFQwODowMDowMFoiLCJpZCI6InRhc2tfN1FtMiJ9"
 }
 ```
+Next page: `GET /v1/projects/proj_8Kd1/tasks?status=in_progress&assignee_id=usr_4Tz9&limit=1&cursor=<next_cursor>`. `next_cursor` is `null` on the last page.
 
-### Update Task Status
+### Mark a task done (conditional update)
 ```http
-PATCH /v1/tasks/task_def456
-Authorization: Bearer {token}
+PATCH /v1/tasks/task_7Qm2 HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/merge-patch+json
+If-Match: "2"
+
+{ "status": "done" }
+```
+```http
+HTTP/1.1 200 OK
+ETag: "3"
 Content-Type: application/json
 
+{ "id": "task_7Qm2", "project_id": "proj_8Kd1", "title": "Implement login page", "description": null,
+  "status": "done", "assignee_id": "usr_4Tz9",
+  "created_at": "2026-09-20T08:00:00Z", "updated_at": "2026-09-22T14:02:00Z" }
+```
+If another client updated the task first, the ETag no longer matches and the response is `412`; the client re-fetches and retries.
+
+### Assign to a non-member (error)
+```http
+PATCH /v1/tasks/task_7Qm2 HTTP/1.1
+Authorization: Bearer <token>
+Content-Type: application/merge-patch+json
+If-Match: "3"
+
+{ "assignee_id": "usr_0Xx1" }
+```
+```http
+HTTP/1.1 422 Unprocessable Content
+Content-Type: application/problem+json
+
 {
-  "status": "done"
+  "type": "https://api.example.com/problems/validation-error",
+  "title": "Request failed validation",
+  "status": 422,
+  "detail": "One or more fields are invalid.",
+  "instance": "/v1/tasks/task_7Qm2",
+  "errors": [
+    { "field": "assignee_id", "message": "User is not a member of project proj_8Kd1." }
+  ],
+  "request_id": "req_2b7e"
 }
 ```
-**Response 200:** Updated task object.
 
-## Field Definitions
+## Errors
+All errors use RFC 9457 Problem Details (`application/problem+json`) with the members shown above; `errors` and `request_id` are extension members.
 
-**Task status values**: `todo` | `in_progress` | `in_review` | `done` | `cancelled`
-**Task priority values**: `low` | `medium` | `high` | `urgent`
-
-## Error Handling
-
-Standard error format:
-```json
-{
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Invalid request",
-    "details": [
-      { "field": "due_date", "message": "Must be a future date" },
-      { "field": "assignee_id", "message": "User is not a project member" }
-    ]
-  },
-  "meta": { "request_id": "req_abc123" }
-}
-```
-
-| Status | Code | When |
+| Status | type | When |
 |--------|------|------|
-| 400 | `VALIDATION_ERROR` | Invalid field values |
-| 403 | `FORBIDDEN` | Not a project member |
-| 404 | `NOT_FOUND` | Task/project doesn't exist |
-| 409 | `CONFLICT` | Duplicate task title within project |
+| 400 | `/problems/malformed-request` | Unparseable JSON, wrong JSON type, bad `limit`/`cursor` format, missing `Idempotency-Key` on POST |
+| 401 | `/problems/unauthenticated` | Missing/expired token; response carries `WWW-Authenticate: Bearer` |
+| 403 | `/problems/forbidden` | Member attempts an owner-only action |
+| 404 | `/problems/not-found` | Resource does not exist or caller is not a member of its project |
+| 409 | `/problems/idempotency-in-progress` | Same `Idempotency-Key` still being processed |
+| 412 | `/problems/precondition-failed` | `If-Match` ETag is stale |
+| 415 | `/problems/unsupported-media-type` | PATCH without `application/merge-patch+json` |
+| 422 | `/problems/validation-error` | Title empty or too long, unknown `status` value, assignee not a project member |
+| 422 | `/problems/idempotency-key-reused` | Same `Idempotency-Key` sent with a different body |
+| 428 | `/problems/precondition-required` | PATCH without `If-Match` |
+| 429 | `/problems/rate-limited` | Rate limit exceeded; see Rate Limiting |
+| 500 | `/problems/internal-error` | Unexpected server error; `detail` is generic, `request_id` links to logs |
+| 503 | `/problems/unavailable` | Temporary outage or overload; response carries `Retry-After` |
+
+(`type` URIs are relative to `https://api.example.com`.)
+
+## Pagination & Filtering
+- Cursor pagination on every list endpoint: `limit` (default 20, max 100 — assumed values) and opaque `cursor`; response `{ "data": [...], "next_cursor": string | null }`.
+- Sort: `created_at` descending with `id` as tiebreaker; the cursor encodes both, so tasks inserted while paging do not shift or duplicate pages. No `total` count.
+- Filters on `GET /projects/{project_id}/tasks`: `status` (one of the enum values) and `assignee_id`; both optional and combined with AND. An unknown `status` value → 422.
+
+## Idempotency & Concurrency
+- `POST /projects` and `POST /projects/{project_id}/tasks` require `Idempotency-Key` (per the IETF httpapi Idempotency-Key draft): same key + same body → stored response replayed; different body → 422; still processing → 409; missing → 400. Keys are scoped per user and kept 24 h (assumption).
+- Member add uses `PUT` on the member path, so it is idempotent by method and needs no key.
+- Every task and project response carries a strong `ETag`. `PATCH` requires `If-Match` (missing → 428, stale → 412) so two clients changing status/assignee cannot silently overwrite each other.
+- `DELETE` is idempotent in effect: a repeated delete returns 404, and no further state changes.
+
+## Rate Limiting
+- 600 requests/minute per token (assumption — replace with the real budget).
+- Every response carries `RateLimit-Policy: "default";q=600;w=60` and `RateLimit: "default";r=<remaining>;t=<seconds-to-reset>` (IETF httpapi ratelimit-headers draft; swap for `X-RateLimit-*` if the platform already uses those).
+- Over the limit: `429 Too Many Requests`, `Retry-After: <seconds>`, problem type `/problems/rate-limited`. Clients back off for at least `Retry-After`.
+
+## Versioning & Deprecation
+- Non-breaking (no version bump): new endpoints, new optional request fields, new response fields.
+- Breaking (requires `/v2`): removing/renaming fields or endpoints, changing types, new required request fields, new `status` enum values, stricter validation, changed status codes or problem `type`s.
+- Retiring a v1 endpoint: send `Deprecation: @<unix-seconds>` and `Link: <https://api.example.com/docs/migrate-v2>; rel="deprecation"`, then `Sunset: <HTTP-date>` no earlier than the deprecation date. The deprecation-to-sunset window must cover the mobile release/adoption cycle — the actual window is an open question.
 
 ## Design Decisions
+**Tasks created under projects, addressed top-level** — `POST /projects/{project_id}/tasks` makes the parent explicit on create; `GET/PATCH/DELETE /tasks/{task_id}` lets clients open a task from just its ID. Rejected: `/projects/{project_id}/tasks/{task_id}` everywhere, which forces clients to carry the project ID.
 
-**Tasks nested under projects for creation, top-level for reads**
-`POST /projects/{id}/tasks` enforces project membership on create.
-`GET /tasks/{id}` allows direct task lookup without knowing the project — needed
-by mobile notification deep-links.
+**Status and assignment via PATCH, not action endpoints** — marking done and assigning are plain field changes; `POST /tasks/{id}/complete` would add endpoints without adding semantics. Revisit if completion gains side effects that need their own resource.
 
-**PATCH not PUT for updates**
-Tasks have many optional fields. PATCH allows partial updates (e.g., just status)
-without requiring the client to know/send the full task object.
+**Cursor pagination only** — task lists grow and are inserted into while clients page; offset pagination would skip or repeat items. One style everywhere keeps client code shared across web and mobile.
 
-**Cursor pagination over offset**
-Tasks lists can grow large and tasks are frequently inserted — offset pagination
-produces inconsistent pages. Cursor pagination is stable.
+**Idempotency-Key on creates** — mobile clients retry on flaky networks; without a key a retry creates duplicate tasks.
+
+## Open Questions
+- Deleting a project: delete its tasks, or block while tasks exist?
+- When a member is removed, what happens to tasks assigned to them (unassign, or block removal)?
+- Can any member edit/delete any task, or only its creator/assignee and the owner?
+- Real rate limit and deprecation-to-sunset window.
+- Can an owner promote a member to owner (role change on the member resource), or is ownership fixed to the creator?

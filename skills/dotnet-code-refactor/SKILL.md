@@ -1,352 +1,170 @@
 ---
 name: dotnet-code-refactor
-description: Safely refactor .NET / C# code at Senior Engineer level — diagnose code smells, classify risk (SAFE/RISKY/DANGEROUS), check the test safety net (or add characterization tests first), apply smallest-change-at-a-time for one smell, preserve behavior, match project convention. Use when the code being rewritten, restructured, cleaned up, or simplified is C#, .NET, or ASP.NET, and after a `dotnet-code-review` when the user says "apply the fixes". For any other language use `refactor`. DOES modify code (unlike `dotnet-code-review`, which only inspects).
+description: Use when restructuring, cleaning up, or simplifying existing C#, .NET, or ASP.NET Core code with identical behavior — including after a `dotnet-code-review` when the user says "apply the fixes". One smell at a time, SAFE/RISKY/DANGEROUS risk, characterization tests first, and .NET traps (LINQ deferred execution, async, records, EF Core translation, DI lifetimes). Modifies code. Not for other languages (use `refactor`), review-only feedback (use `dotnet-code-review`), bug fixes (use `fix-bug` or `debug`), or speed work (use `performance-review`).
 ---
 
-# Code Refactor (Safe code improvement at Senior Engineer level)
+# .NET Code Refactor
 
-When this skill activates, act as a **Senior Software Engineer** refactoring a module that other people are using. Goal: improve code quality **without changing behavior**, **without breaking tests**, and **without bundling multiple changes into a single step**.
+Act as a senior .NET engineer improving code others depend on, one verified step at a time.
 
-This skill is different from `dotnet-code-review`: here you **actually modify the code**, not just point out problems. It's also different from greenfield code generation: this is **editing live code already in use**, which is much riskier.
+## Core principles
 
-## Core principles (read before touching code)
+1. **Refactoring = no observable behavior change**: same results, exceptions and messages, side effects, public API, JSON shape, query results. New validation/pagination/transactions, changed messages, input trimming, or a bug fix is a **behavior change** — recommend it separately; never slip it in.
+2. **One smell, smallest step**, build and test between steps. Refactoring and feature work never share a change.
+3. **Project convention beats generic best practice.** Read neighboring files, `.editorconfig`, and `Directory.Build.props` (`Nullable`, `TreatWarningsAsErrors`, analyzers). Keep the existing folder layout; if none, group by feature.
+4. **No safety net, no RISKY refactor.** Write characterization tests first, or stop.
+5. **DANGEROUS work waits for the user's explicit yes.** Ask (use AskUserQuestion if available, otherwise ask in plain text).
 
-1. **Refactoring does not change behavior.** That's the definition. If the output or behavior changes after refactoring — that's not a refactor, that's a rewrite (treat it as a feature change, with a spec and new tests). When unsure what the old behavior is → don't guess, write a characterization test first.
-2. **Smallest possible change, one smell at a time.** Don't combine "rename + extract method + change return type" into one commit. Each refactoring is a standalone step: test passes, then move to the next. Reason: if something breaks, it's easy to locate.
-3. **Don't refactor and add a feature in the same change.** Split the work: refactor first (behavior identical, tests green) → commit → add the feature → commit. Mixing them makes review impossible to split and debugging impossible to bisect.
-4. **Project convention beats general best practice.** If the codebase uses `_camelCase` for private fields, don't switch to `camelCase` just because "Microsoft recommends it". Read 2–3 neighboring files and follow what they do.
-5. **Tests are a mandatory safety net.** No tests → no refactoring (or write characterization tests first). Tests exist but are weak (mock everything, assert nothing) → treat as no tests.
-6. **High risk and no way to reduce it → stop and ask the user.** Don't refactor authentication, payment, or migrations by yourself.
+## Workflow
 
-## Workflow (6 steps, in order, no skipping)
+### Step 1 — Diagnose
 
-### Step 1: Diagnose — identify the smell and the intent
+State what the code does and who calls it; if you can't, ask. Given a `dotnet-code-review` report, only its behavior-neutral findings belong here; the rest are behavior changes (principle 1).
 
-Before changing a single line:
-
-1. **Read the current code carefully** and understand what it does (like Step 1 of code-review). If you can't articulate intent → ask the user, don't guess.
-2. **List the code smells you found.** Classify them with the table below:
-
-| Smell | Signal | Matching refactoring |
+| Smell | .NET signal | Refactoring |
 |---|---|---|
-| **Long Method** | Function >50 lines, doing several things | Extract Method, Replace Temp with Query |
-| **Large Class** | Class >300 lines, multiple responsibilities | Extract Class, Extract Subclass |
-| **Long Parameter List** | >4–5 parameters | Introduce Parameter Object, Preserve Whole Object |
-| **Duplicate Code** | Same logic in 2–3 places | Extract Method, Pull Up Method, Form Template Method |
-| **Feature Envy** | Method A uses class B's properties more than its own | Move Method |
-| **Data Clumps** | Several fields always travel together (firstName, lastName, dob) | Extract Class / Record |
-| **Primitive Obsession** | Using string/int for a domain concept (email is a string, money is a decimal) | Replace Primitive with Value Object |
-| **Switch Statements** | Large switches on type, repeated in many places | Replace Conditional with Polymorphism, Replace Type Code with Subclass |
-| **Lazy Class** | Class with too little behavior | Inline Class |
-| **Speculative Generality** | Abstraction with only one use case | Inline Class, Collapse Hierarchy |
-| **Temporary Field** | Field used only inside a few methods, null otherwise | Extract Class, Introduce Null Object |
-| **Message Chains** | `a.getB().getC().getD().doIt()` | Hide Delegate |
-| **Middle Man** | Class only delegates to another class | Remove Middle Man |
-| **Inappropriate Intimacy** | Two classes know too much about each other's privates | Move Method, Extract Class, Change Bidirectional → Unidirectional |
-| **Comments** | Long comments explaining "what the code does" | Extract Method with a clear name; let the code self-document |
-| **Mysterious Name** | `data`, `tmp`, `handle`, `process` | Rename |
-| **Magic Number/String** | Strange numbers/strings scattered around | Replace Magic Literal with Constant |
-| **Deeply Nested Conditional** | if-in-if-in-if 4–5 levels deep | Decompose Conditional, Guard Clauses, Replace Nested Conditional with Guard Clauses |
+| Long method | > ~50 lines, several jobs | Extract Method / local function |
+| God service | 6+ constructor dependencies, unrelated methods | Extract Class along one responsibility |
+| Long parameter list / data clump | > 4–5 params; same group travels together | Parameter object (`record`) |
+| Duplicate code | Same logic in 2+ places | Extract Method — grep for an existing helper first |
+| Primitive obsession | `string email`, `decimal` money without currency | Value object (`readonly record struct`) |
+| Deep nesting | 4+ levels of `if` | Guard clauses / early return |
+| Repeated type switch | Same `switch` on an enum in several methods | Polymorphism; a lone switch → at most a switch expression |
+| Scattered config reads | `config["Smtp:Host"]` in many classes | Bound `IOptions<T>` |
+| Speculative generality | One-implementation interface with no test double | Inline it |
 
-3. **Agree with the user on which smells to fix in this session.** Don't fix everything yourself. If the user says "refactor this file", list the smells you found + propose the top 2–3 → ask the user to pick.
+**Interfaces and wrappers:** extract an interface only for a real seam (a test double you will write, a second implementation); wrap a third-party dependency only where the wrapper adds value (narrower interface, error translation, test seam) — inline pass-through proxies.
 
-### Step 2: Classify Risk — decide whether to touch it
+For "refactor this whole file": propose the top 2–3 smells and ask which first.
 
-Each refactoring carries different risk. Classify before changing anything:
+### Step 2 — Classify risk
 
-| Risk Level | Description | Handling |
+| Level | Examples | Handling |
 |---|---|---|
-| **SAFE** | Tool-assisted, behavior provably unchanged | Proceed, no extra safety tests needed (existing tests suffice) |
-| **RISKY** | Requires reading/understanding logic, easy to subtly break | MANDATORY safety tests before the change; verify with the test suite after |
-| **DANGEROUS** | Touches auth/payment/concurrency/DB schema/public API | REQUIRE USER CONFIRMATION first. Need strong integration tests + rollback plan |
+| **SAFE** | IDE rename of a private/local symbol; Extract Method with clear inputs/outputs; inline a single-use local; guard clauses | Proceed on existing build + tests |
+| **RISKY** | Public renames; Extract Class / Move Method; class → record; loop ↔ LINQ; sync → async on a private/internal method (public signatures = behavior change); collection type changes; extracting an interface; DI registrations | Characterization tests first, full suite after |
+| **DANGEROUS** | Auth/authz, money, EF model config/migrations/hot queries, transactions/locks, public API/DTO contracts, message consumers, lifetimes of stateful services | Stop, explain risk and a safer breakdown, wait for approval |
 
-**SAFE refactorings (usually):**
-- Rename (local variable, private method, private field) via IDE
-- Extract Method from a well-defined block (clear inputs/outputs)
-- Inline a local variable used only once
-- Reorder methods within a file
-- Convert anonymous → named function
-- Format code (via the formatter)
-- Add type annotations for obvious variables/return types
+A "private" rename is RISKY if the name reaches reflection, Razor, config binding, EF column conventions, or JSON keys (System.Text.Json uses property names). Grep the string, not just the symbol.
 
-**RISKY refactorings:**
-- Rename a public/exported symbol (affects callers — find them first)
-- Extract Class
-- Move Method/Field across classes
-- Replace Conditional with Polymorphism
-- Introduce Parameter Object
-- Change exception type / error code
-- Change data structure (List → Dictionary…)
-- Replace an interface implementation
-- Refactor async/concurrent code (locks, channels, await patterns)
+### Step 3 — Test safety net
 
-**DANGEROUS refactorings (must escalate):**
-- Touching authentication / authorization logic
-- Touching payment / billing / financial calculation
-- Modifying DB schema, migration, or hot-path queries
-- Refactoring locks / transactions / concurrency primitives
-- Changing a public API contract (signature, response shape, status code)
-- Refactoring a message queue consumer (risk of double-process / lost message)
-- Touching CI/CD pipelines or deployment scripts
-- Modifying security boundaries (input validation, sanitization)
+1. Run the baseline: `dotnet build`, then `dotnet test` (narrow with `--filter "FullyQualifiedName~OrderService"`). Red baseline → stop and ask.
+2. Tests that only `Verify(...)` mocks or assert `NotNull` count as none.
+3. Characterization test: assert what the code **actually** returns or throws (exact exception type) today, bugs included:
 
-**Rule:** if the refactoring falls into DANGEROUS → STOP, tell the user: "This refactor touches [X], the risk is high. I suggest [approach]. Do you want me to proceed, or should I break it down further?"
+```csharp
+[Fact]
+public void Discount_NonPremiumUser_ReturnsZero() =>
+    Assert.Equal(0m, Pricing.Discount(new User(IsPremium: false), total: 500m));
+```
 
-### Step 3: Check the Test Safety Net
+EF Core query refactors: characterize on the production database engine (Testcontainers); SQLite in-memory is a fallback that hides async-timing bugs; the InMemory provider never translates to SQL. Bug found while characterizing → list it under "Behavior changes recommended"; don't fix it here.
 
-Refactoring without tests = gambling. Check before changing:
-
-1. **Find tests for the code you'll refactor.** Search the test files by the project's convention: `*.test.*`, `*Tests.cs`, `test_*.py`, etc.
-2. **Assess test quality:**
-   - ✅ Tests cover main behavior (happy + error + edge cases) → safety net is sufficient
-   - ⚠️ Tests exist but are weak (only check method-was-called, mock everything, vague assertions) → treat as no tests
-   - ❌ No tests → write characterization tests first
-3. **If the safety net is insufficient:**
-
-   a. **For RISKY/DANGEROUS refactors → write characterization tests first.** A characterization test "records the current behavior" (including bugs, if any) before refactoring. Purpose: if the refactor changes behavior, the test will fail. How to write:
-      ```
-      1. Call the current code with concrete inputs
-      2. Capture the actual output (including incorrect/buggy output)
-      3. Assert that output
-      4. Run the test → it passes (because we're asserting actual output)
-      5. Refactor → re-run → still passes = behavior unchanged
-      ```
-      If you discover a bug while writing characterization tests → DO NOT fix the bug in the same refactor commit. Note it down, fix it separately later.
-
-   b. **For SAFE refactors (local rename, small extract method) → may proceed** if the change is simple and lint/compile checks catch the basics. Still note "test coverage is thin" in the report.
-
-4. **Run the existing tests before changing anything** to confirm they pass (baseline). If they fail to start → DO NOT refactor; ask the user whether the tests are already broken.
-
-### Step 4: Plan — write the refactor plan
-
-Before editing, write a short plan for the user:
+### Step 4 — Plan
 
 ```markdown
 ## Refactor Plan
-
-**File:** `path/to/file.ext`
-**Smell:** [smell name]
-**Refactoring:** [technical refactoring name, e.g. "Extract Method"]
-**Risk:** [SAFE / RISKY / DANGEROUS]
-**Test safety net:** [✅ sufficient / ⚠️ weak — characterization tests added / ❌ missing — will add]
-
-**Steps:**
-1. [Step 1, atomic, independently commit-able]
-2. [Step 2 …]
-3. [...]
-
-**Expected outcome:** behavior unchanged, [improvement metric, e.g. "80-line function → four 15–25 line functions"]
-
-**Not in scope:** [things NOT being changed in this refactor — e.g. "not fixing bug X even though we noticed it; separate PR"]
+**Files:** `src/Orders/OrderService.cs`
+**Smell → refactoring:** [e.g. Long method → Extract Method]
+**Risk:** SAFE / RISKY / DANGEROUS
+**Safety net:** ✅ sufficient / ⚠️ weak — adding characterization tests / ❌ none — adding
+**Steps:** 1. [atomic, builds and passes on its own] 2. …
 ```
 
-Wait for user confirmation before going to Step 5 (especially for RISKY/DANGEROUS). For simple SAFE work, you can skip confirmation if the intent is already clear.
+Wait for confirmation on RISKY/DANGEROUS plans; clear SAFE work may proceed.
 
-### Step 5: Apply — refactor step by step
+### Step 5 — Apply
 
-Rules while editing:
+1. One step → `dotnet build` → `dotnet test` → next step.
+2. Rename with the IDE/Roslyn rename, then do the Step 2 string grep.
+3. Format touched files only, with the project's `.editorconfig`/analyzers: `dotnet format --include src/Orders/OrderService.cs`.
+4. Never silence a new warning (`#pragma`, `<NoWarn>`, `!`) — it means the step changed something. No package upgrades or namespace moves on the side.
+5. **A step fails unexpectedly:** undo only that step (restore the previous text, or `git revert` its commit) — never "fix" the tests. Ask before `git stash` or `git checkout -- <file>`; never `git reset`. Outdated branch or conflicts → ask the user; don't rebase or merge.
 
-1. **One refactoring at a time.** Don't combine. If the plan has 3 steps, do step 1 → verify → step 2 → verify → step 3.
-2. **After each small step → run the tests.** If tests fail → undo that step, investigate, do not continue. If compile-check fails → fix it before moving on.
-3. **When renaming:**
-   - Local scope → rename directly
-   - Public/exported → first find all usages, list them, ensure all are updated, then rename. For cross-team public APIs → consider adding a deprecated alias instead of a hard rename.
-4. **When extracting a method:**
-   - Name the new function by "what it does", not "how it works". `calculateTax` is better than `loopThroughItems`.
-   - The new function must have clear invariants: inputs, outputs, side effects.
-   - Don't extract just to reduce line count — it must carry semantic meaning.
-5. **When extracting a class:**
-   - The new class must have one clear responsibility
-   - Don't create a class with one method (that's a function)
-   - Be careful with cross-class state mutation
-6. **Match the project's formatting conventions** — run the formatter if available (`dotnet format`, `prettier`, `black`, `gofmt`).
-7. **Don't delete useful comments.** Comments explaining "why" (intent, edge-case reasoning) → keep. Comments explaining "what" (when the code is already clear) → safe to remove.
-8. **Don't upgrade dependencies / change import paths** during a refactor. That's a separate task.
+### Step 6 — Verify and report
 
-### Step 6: Verify and Report
-
-After refactoring is done:
-
-1. **Re-run the full test suite** (unit + integration, if available). Must pass 100%.
-2. **Run the linter/static analyzer** (if the project has one). Must be clean, or at least no worse than before.
-3. **Diff before/after** — re-read it as if reviewing your own code. If you spot changes not in the original plan → reconsider whether they're needed or should be reverted.
-4. **Output the report using the template:**
+Full `dotnet build` (warnings ≤ baseline) and `dotnet test`; review the diff and revert anything outside the plan.
 
 ```markdown
-# Refactor Report — [file/feature name]
-
-**Smell fixed:** [name]
-**Refactoring applied:** [technique name]
-**Risk level:** [SAFE / RISKY / DANGEROUS]
-
+# Refactor Report — [file/feature]
+**Smell → refactoring:** … **Risk:** …
 ## Changes
-- [One-line summary per change/file]
-
-## Metrics (before → after)
-- Lines: [X → Y]
-- Cyclomatic complexity: [if measured]
-- Function count: [...]
-- Test count: [...]
-
-## Test results
-- ✅ All [N] tests pass
-- [Or: ⚠️ Added [M] characterization tests before refactoring; all pass]
-
-## Behavior verification
-- [Concrete: e.g. "Input X → output Y both before and after refactor"]
-
-## NOT included in this refactor
-- [Other smells noticed but deferred to a follow-up PR: ...]
-- [Bug discovered while writing characterization tests: ...]
-
-## Suggested next refactor
-- [What to do next, independent of what was just done]
+- [one line per change/file]
+## Verification
+- Build: ✅ (warnings: before N → after N)   Tests: ✅ X passed (Y characterization tests added)
+- Behavior evidence: [input → same output before and after]
+## Deliberately not changed
+- [tempting cleanups or deferred smells, and why]
+## Behavior changes recommended (not applied)
+- [🔴 BLOCKER / 🟠 MAJOR / 🟡 MINOR / 💭 NIT] [title] — `file:line` — [problem] → [proposed separate change]
 ```
 
-## Common Refactoring Patterns — cheatsheet
+Omit empty sections. Severities are defined as in `dotnet-code-review`.
 
-### Long Method → Extract Method
+User insisted on no tests → open the report with "No safety net — behavior not verified."
 
-```[lang generic]
-// BEFORE — one function doing four things
-function processOrder(order) {
-  // validate
-  if (!order.id) throw new Error("missing id");
-  if (order.items.length === 0) throw new Error("empty");
-  // calculate
-  let total = 0;
-  for (const item of order.items) total += item.price * item.qty;
-  total += total * 0.1; // tax
-  // persist
-  db.save({ ...order, total });
-  // notify
-  email.send(order.customerEmail, `Total: ${total}`);
-}
+## .NET behavior-preservation traps
 
-// AFTER — four functions, each does one thing
-function processOrder(order) {
-  validateOrder(order);
-  const total = calculateTotal(order);
-  saveOrder(order, total);
-  notifyCustomer(order.customerEmail, total);
-}
+**LINQ deferred execution.** An extracted `IEnumerable<T>` query re-runs on every enumeration — side effects repeat and results track source changes. Adding/removing `.ToList()` moves *when* (for `IQueryable`, *where*) it runs.
+
+```csharp
+IEnumerable<Order> pending = orders.Where(o => o.IsPending); // not evaluated yet
+orders.Add(new Order(IsPending: true));
+int count = pending.Count();                                  // includes the new order
 ```
 
-### Deeply Nested Conditional → Guard Clauses
+**Async propagation.** Never block with `.Result`/`.Wait()`/`.GetAwaiter().GetResult()` — propagate `await`. No new `async void` outside event handlers. Don't elide `async`/`await` inside `using` or `try`: the resource is disposed before the task completes — this fails on truly async providers (Npgsql) yet can pass in SQLite-backed tests, which complete synchronously:
 
-```[lang generic]
-// BEFORE — pyramid of doom
-function discount(user, order) {
-  if (user) {
-    if (user.isPremium) {
-      if (order.total > 100) {
-        return order.total * 0.2;
-      }
+```csharp
+// BROKEN after "simplifying": db is disposed while the query may still be running
+Task<List<Order>> LoadAsync() { using var db = factory.CreateDbContext(); return db.Orders.ToListAsync(); }
+// Keep the await
+async Task<List<Order>> LoadAsync() { using var db = factory.CreateDbContext(); return await db.Orders.ToListAsync(); }
+```
+
+**Exceptions.** Rethrow with `throw;` (`throw ex;` resets the stack trace). Keep exception types — callers catch them. Validation moved into an iterator or `async` method throws later (first enumeration / awaited task).
+
+**class → record.** Equality becomes value-based (`==`, dictionary/set keys, `Distinct()`) except collection members, which compare by reference; `ToString()` (often logged) changes. Don't convert EF Core entities — value equality breaks user-initialized `HashSet` navigations and identity-based tracking (mutating a tracked record changes its hash).
+
+**Nullable annotations.** Enabling `<Nullable>` or adding `?` changes warnings (build errors under `TreatWarningsAsErrors`), not runtime behavior. Adding `ThrowIfNull` or `?? throw` does.
+
+**Switch statement → switch expression.** An unmatched statement does nothing; an unmatched expression throws `SwitchExpressionException` (compiler warning CS8509/CS8524). Add a `_ =>` arm reproducing the old fallback.
+
+**EF Core translation.** A query lambda extracted into a plain C# method is untranslatable — EF Core 3+ throws at runtime, and "fixing" it with `AsEnumerable()` loads the whole table. Reuse predicates as `Expression<Func<T, bool>>`. An `IQueryable<T>` → `IEnumerable<T>` parameter silently moves filtering into memory, where C# string rules replace database collation. Compare `query.ToQueryString()` (EF Core 5+) before and after.
+
+```csharp
+static readonly Expression<Func<Order, bool>> IsOverdue = o => o.DueDate < DateTime.UtcNow && !o.Paid;
+// db: AppDbContext, ct: CancellationToken
+var overdue = await db.Orders.Where(IsOverdue).ToListAsync(ct);
+```
+
+**DI lifetimes.** A singleton must not depend on scoped services (captive `DbContext`). Moving to `Singleton` shares state across requests; moving `new Foo()` into DI changes who disposes it. The default host validates scopes in Development — start the app there after changing registrations.
+
+**Config → `IOptions<T>`.** A missing key leaves the property at its initializer where `config["X"]` returned `null` — keep the old fallback. `ValidateOnStart()` is a behavior change (startup can fail).
+
+## C# patterns
+
+**Guard clauses** — invert each condition exactly (`total > 100m` becomes `if (total <= 100m) return 0m;`) and only over side-effect-free conditions.
+
+**Primitive → value object** — throw the same exception type and message the old check threw:
+
+```csharp
+public readonly record struct Email
+{
+    public string Value { get; }
+    public Email(string value)
+    {
+        if (!value.Contains('@')) throw new ArgumentException($"Invalid email: {value}", nameof(value));
+        Value = value;
     }
-  }
-  return 0;
-}
-
-// AFTER — early returns
-function discount(user, order) {
-  if (!user) return 0;
-  if (!user.isPremium) return 0;
-  if (order.total <= 100) return 0;
-  return order.total * 0.2;
 }
 ```
 
-### Switch on Type → Polymorphism (when the switch repeats in many places)
+`default(Email)` skips the constructor (`Value` is `null`); use a `sealed record` class if that matters.
 
-```[lang generic]
-// BEFORE — switch on type, repeated in 3 places
-function area(shape) {
-  switch (shape.type) {
-    case "circle": return Math.PI * shape.r ** 2;
-    case "rect": return shape.w * shape.h;
-  }
-}
-function perimeter(shape) {
-  switch (shape.type) {
-    case "circle": return 2 * Math.PI * shape.r;
-    case "rect": return 2 * (shape.w + shape.h);
-  }
-}
+## Anti-patterns
 
-// AFTER — each shape knows how to compute itself
-// Warning: only switch to polymorphism when the switch REPEATS across multiple methods.
-// A switch in a single place is usually clearer left alone.
-class Circle { area() {...} perimeter() {...} }
-class Rect   { area() {...} perimeter() {...} }
-```
-
-### Primitive Obsession → Value Object
-
-```[lang generic]
-// BEFORE — email is a string everywhere
-function sendEmail(to, subject, body) {
-  if (!to.includes("@")) throw new Error("invalid");
-  // ...
-}
-
-// AFTER — Email is its own type, validation in the constructor
-class Email {
-  constructor(value) {
-    if (!value.includes("@")) throw new Error("invalid email: " + value);
-    this.value = value;
-  }
-}
-function sendEmail(to: Email, subject, body) { /* no need to re-validate */ }
-```
-
-### Magic Number/String → Named Constant
-
-```[lang generic]
-// BEFORE
-if (user.age >= 18 && order.total > 50000) { ... }
-
-// AFTER
-const LEGAL_ADULT_AGE = 18;
-const VIP_ORDER_THRESHOLD = 50000;
-if (user.age >= LEGAL_ADULT_AGE && order.total > VIP_ORDER_THRESHOLD) { ... }
-```
-
-## Anti-patterns when refactoring (DO NOT do these)
-
-❌ **Don't refactor and add a feature in the same change.** Split into two commits/PRs.
-
-❌ **Don't do a "Big Bang refactor".** Don't gut the whole file and rewrite it when the request was "refactor". That's a rewrite — it needs a fresh spec, new tests, and heavier review.
-
-❌ **Don't refactor without tests.** Either write characterization tests first, or stop.
-
-❌ **Don't impose an ideal pattern on a legacy codebase without asking.** Codebases have their own style. Refactor toward the codebase's style, not "best practice from a 2024 blog post".
-
-❌ **Don't assume "user said refactor = go big".** The user may only want a small fix. Plan first, ask for confirmation.
-
-❌ **Don't refactor a file you don't understand.** Read + ask if needed; don't guess intent.
-
-❌ **Don't skip running the tests after a refactor** with the excuse "small change, surely fine". Those small changes are the ones that break things most often.
-
-❌ **Don't refactor a public API without listing callers.** Find all usages, list them, then decide.
-
-❌ **Don't bundle multiple refactorings into one commit.** One commit = one atomic refactoring. Easier to review and revert.
-
-❌ **Don't delete code that "looks dead" without verifying.** Search references before deleting. Dead-looking code may be invoked via reflection / DI / convention-based wiring.
-
-## Special situations
-
-- **User says "refactor this entire file":** don't do it all. Diagnose → list smells → propose the top 3 → ask which to start with. Good refactoring is incremental, not in one shot.
-
-- **User says "optimize performance":** this is NOT pure refactoring. Performance optimization can change behavior (caching, lazy evaluation). Warn the user and propose benchmarking before/after.
-
-- **After refactoring, tests fail and you don't know why:** STOP. Undo the refactor (git reset / revert). Don't "fix the tests to make them pass" — that's self-deception.
-
-- **User gives long code, no tests, no context:** refuse a large refactor. Propose: "This code has no tests; refactoring without a safety net is risky. I suggest two options: (1) I write characterization tests for part X first, then refactor; (2) only do minimal SAFE refactors (rename, small extract method). Which do you prefer?"
-
-- **User says "no tests needed, just refactor":** warn again. If the user insists → state clearly in the report that the refactor was done without tests and behavior may have changed undetected.
-
-- **Refactoring in a PR with merge conflicts / outdated branch:** rebase/merge first, confirm baseline tests pass, then refactor. Don't refactor on top of code that doesn't build.
-
-- **Code is still ugly or reveals deeper smells after refactoring:** OK. Refactoring is incremental. Note: "after Extract Method, class X reveals smell Y — suggest a follow-up refactor in a later PR".
-
-- **User just wants to rename a variable across files:** still follow the short workflow — find all usages, list before modifying, edit, run tests. Don't skip just because "rename is simple".
+- Big-bang rewrites when asked to "refactor".
+- Deleting "dead" code without checking reflection, DI assembly scanning, controller routing, and serializers.
+- Imposing patterns the codebase doesn't use (MediatR, repositories over `DbContext`, new folder schemes) — ask first.

@@ -1,220 +1,125 @@
 ---
 name: fix-bug
-description: Use as the entry point when the user reports a bug with limited context — pastes an error message or stack trace, says code isn't working, or asks vaguely "fix this", "not working", "why is this failing". Gathers scope, data flow, dependencies, and history, asks the user for what is missing, then proposes a fix with an explicit confidence level instead of guessing. Once the failure is reproducible and you are eliminating hypotheses, switch to `debug`.
+description: Use when the user reports a bug with little context — the entry point for bug reports — an error message, a stack trace, "it's not working", "fix this", "why is this failing", "sửa lỗi này", "fix lỗi", "tại sao bị lỗi". Gathers scope, data flow, and history, asks only for what the code can't tell you, tries to reproduce, then applies a minimal fix with an explicit confidence level and a regression test. Not for a failure already reproducible that needs hypotheses eliminated — use `debug`; not for a live production incident — use `sre-engineering`.
 ---
 
-# Fix Bug — Deep Debugger
+# Fix Bug
 
-**Never fix immediately.** Always go through the analysis process first. A rushed fix can create more bugs than it solves.
+Turn a thin bug report into a verified fix: gather context, reproduce, fix at the cause with a stated confidence — and hand off to `debug` when a hypothesis-elimination loop is needed.
 
----
+## Rules
 
-## PHASE 1: Gather Context (REQUIRED)
+1. **Evidence before edits.** Every claim about the cause points to a `file:line`, a quoted log/error line, or a command's output. If it points to nothing, it is a hypothesis — label it as one.
+2. **Don't ask what you can look up.** Read the stack trace, the code, the tests, and `git log` before asking the user anything. Ask only for what only they know.
+3. **Root cause ≠ fix.** The root cause is a fact about the code, data, or environment; the fix is the change you make (see step 5). Never write a remedy in the root-cause field.
+4. **Confidence gates the change** (see Confidence levels). Apply code only at High, or at Medium after the user confirms the open assumption.
+5. **Minimal fix at the cause.** No retry around a race, no `try/catch` or null-check that hides a wrong value, no drive-by refactoring. If the fix changes behavior for other callers, call it out separately.
+6. **No destructive or state-changing moves without asking** — no `git reset`, `git checkout .`, `git clean`, data deletion, or restarting shared services. `git stash` or a separate worktree protects uncommitted work; history inspection (`git log`, `git blame`, `git diff`) is read-only and fine.
+7. **Follow the project's existing conventions** for code style, error handling, and test layout.
 
-Before proposing any fix, complete the following:
+## Fast path — obvious bugs
 
-### 1.1 Define bug scope
+If the error pinpoints a line and the cause is visible there (typo in a name, wrong import path, missing argument, off-by-one next to the stack frame), don't run the full workflow. Fix it, state **Confidence: High — [one-line reason]**, run the failing command or nearest test to confirm, add a regression test unless that command already is a test or build/type check that would catch a recurrence, and use the short output at the end. If the "obvious" fix doesn't make the failure go away, drop back to step 1.
 
-- Which layer is affected? (UI / API / Database / External Service / Infrastructure)
-- Which feature or module?
-- Is it reproducible? Under what conditions?
-- Frequency: always or intermittent?
+## Workflow
 
-### 1.2 Trace the data flow
+### 1. Intake — extract, look, then ask
 
-- What is the input? Format and source?
-- Which functions or modules does data flow through?
-- Any transformations between steps?
-- Where does expected output diverge from actual output?
+From what the user gave, extract: exact error text, `file:line` frames, the command/action that triggered it, environment, and expected vs actual behavior. Then check what's still missing:
 
-### 1.3 Analyze dependencies
+| Needed | Why it matters |
+|---|---|
+| Expected vs actual, concretely | Without it you can't tell the bug from intended behavior |
+| Exact trigger (input, request, steps, test name) | Needed to reproduce |
+| Frequency: always / sometimes / once | "Sometimes" points at timing, state, or data variation |
+| Environment where it fails vs where it works | The difference is often the cause |
+| Did it ever work? What changed since (deploy, dependency, config, data)? | Narrows the search to a diff |
+| Full stack trace / logs, not a screenshot crop | The first error and "caused by" chain usually matter most |
 
-- Which files or modules are directly involved?
-- Any shared state? (global variables, context, store, cache)
-- External dependencies: APIs, databases, third-party services?
-- Environment variables or config that could affect behavior?
+Before asking, take a first look — open the files in the stack trace, find the relevant tests, run `git log --oneline -15 -- <file>` — and fill in anything the code or history answers (Rule 2). Ask for the rest in **one batch** of at most four questions, most important first — use AskUserQuestion if available, otherwise ask in plain text with short suggested answers (e.g. "Which environment? local / staging / production / all"). If the user can't answer, continue with the assumption stated explicitly.
 
-### 1.4 Check history
+### 2. Investigate — scope, data flow, history
 
-- Did this code ever work correctly?
-- Any recent changes? (commits, deploys, config changes)
-- Any packages or dependencies recently updated?
-- Did the bug appear after a specific event?
+- **Locate the failure point.** Open the top in-project stack frame (skip library frames). With no stack trace, grep for the error message text or the UI string/endpoint involved.
+- **Trace the data backward** from the failure point to its source: which function produced the bad value, what input it received, what transformations sit in between (parsing, mapping, serialization, caching). The bug lives where expected and actual first diverge.
+- **Map what the path depends on**: shared state (globals, caches, singletons, session), config and env vars, external calls (DB, APIs, queues), and concurrency (async boundaries, threads, parallel requests).
+- **Check history** when it "used to work": `git log --oneline -15 -- <file>`, `git log -L <start>,<end>:<file>` for a function's history, `git blame -L <start>,<end> <file>`, and a lockfile diff for dependency bumps.
+- **Match the symptom to common causes** to decide where to look first:
 
-### 1.5 Consider edge cases
+| Symptom | Look first at |
+|---|---|
+| null/undefined/`NoneType` error | Optional data (missing field, empty result, unset config) reaching code that assumes presence |
+| Wrong value, no error | Transform/mapping steps, units, time zones, default values, stale cache |
+| Works locally, fails elsewhere | Config/env vars, dependency versions, data volume, file paths, permissions |
+| Intermittent | Unawaited async, shared mutable state, ordering assumptions, timeouts, test pollution |
+| Started after a deploy/upgrade | The diff between last-good and current, including lockfiles and config |
+| 4xx/5xx from an integration | Contract mismatch: field names, types, auth, serialization |
 
-- What happens with null / undefined / empty data?
-- What about unexpectedly large or malformed data?
-- Could a race condition occur?
-- Timeouts or network issues?
+### 3. Reproduce
 
----
+Turn the trigger into something runnable: a failing test (preferred — it becomes the regression test), a script, a `curl`, or exact manual steps. Run it and confirm the failure matches the reported symptom. If you can't run it, give the user the exact command and ask for the output.
 
-## PHASE 2: Ask the User (When Information Is Missing)
+If it won't reproduce, say so, list what differs between your attempt and the report, and ask for the missing piece (data sample, env, logs at a finer level) rather than fixing blind.
 
-If critical information is missing, **use the `AskUserQuestion` tool** to ask the user — do not ask in plain text. The tool renders as a UI with buttons or options for faster responses.
+### 4. Decide: fix or hand off
 
-Group up to 4 questions per call. Prioritize the most important ones first.
+- **One cause explains every observation** (including odd ones: why only in prod, why only sometimes) → go to step 5.
+- **Reproducible, but two or more plausible causes remain** → follow the `debug` skill's loop (hypothesize → one-variable experiments → prove the root cause) starting from your reproduction. Carry over your intake and investigation findings as its Symptom and Reproduction; debug's report then replaces this skill's output. If `debug` isn't installed: list each hypothesis with the observation that would distinguish it, run the cheapest distinguishing check first, and don't fix until one remains.
+- **Not reproducible, causes still open** → don't change code. Report at Low confidence with the hypotheses and the specific data that would separate them (a log line to add, a query to run, a config to compare).
 
-### Sample questions by category
+### 5. Fix
 
-**About the error/symptom:**
-- "When does the bug occur?" → options: `Every time` / `Only in some cases` / `First time seeing it`
-- "Is there a stack trace?" → options: `Yes, here it is` (+ Other) / `No`
+- State the root cause as a causal chain with `file:line`: cause → intermediate effect → observed symptom. If you use "why?" chains, stop at the first cause you can change and state it as a fact; e.g. *slow endpoint → full scan on `orders` → no index on `orders.customer_id`* is the root cause; *add the index* is the fix.
+- Make the smallest change that removes that cause. Check callers of anything you change (grep) and note any behavior change for them.
+- Grep for the same pattern elsewhere; list the hits rather than silently fixing them all.
 
-**About environment:**
-- "Which environment?" → options: `Local` / `Staging` / `Production` / `All`
-- "Did the bug appear after a change?" → options: `New deploy` / `Dependency update` / `Config change` / `Unknown`
+### 6. Regression test and verification
 
-**About history:**
-- "Did this code ever work correctly?" → options: `Yes, it worked before` / `Never worked` / `Not sure`
-- "Have you tried any fixes?" → options: `No attempts yet` / `Tried but failed` / `Partially fixed`
+- Add a test that reproduces the bug. It must fail on the old code and pass on the new — run it both ways (e.g. `git stash push -- <fixed files>` (add `-u` if the fix created a file), run the test, `git stash pop`; the new test file stays in place).
+- Rerun the original reproduction; run the surrounding test suite (and lint/type-check if the project has them).
 
-**About business logic:**
-- "What is the expected behavior?" → use `Other` for free-text if no options fit
+## Confidence levels
 
----
+| Level | Meaning | Allowed action |
+|---|---|---|
+| **High** | Reproduced, cause traced to `file:line`, fix verified against the reproduction (or a fast-path fix confirmed by rerunning) | Apply the fix |
+| **Medium** | Cause traced in code but not reproduced, or one stated assumption unverified | Propose the fix; apply after the user confirms the assumption |
+| **Low** | Key information missing; cause is a hypothesis | No code change — give hypotheses and the next data to collect |
 
-## PHASE 3: Root Cause Analysis
+Every Medium or Low report ends with the specific questions or checks that would raise it.
 
-Once sufficient information is gathered, analyze using the following framework:
+## Output format
 
-### 3.1 Distinguish Symptom vs Root Cause
+```markdown
+## Bug: [one-line title]
+**Confidence**: High / Medium / Low — [why, in one line]
 
-| Symptom | Root Cause |
-|---------|------------|
-| API returns 500 | Null pointer in service layer |
-| UI doesn't render | State not updated correctly |
-| Wrong data returned | Transform logic error |
+### Symptom
+- **Expected**: [...]
+- **Actual**: [exact error or wrong value, quoted]
+- **Trigger / frequency / environment**: [...]
 
-Always dig down to the root cause — never fix the symptom.
+### Investigation
+- Path traced: [entry point → ... → failure point, with file:line]
+- Depends on: [shared state, config/env, external calls, concurrency on this path — only what matters]
+- History: [relevant commits/changes, or "no recent changes to this path"]
+- Reproduction: [command or test + result, or why it could not be reproduced]
 
-### 3.2 Apply 5 Whys
+### Root cause
+[Causal chain with file:line — a fact, not a remedy]
 
-Keep asking "Why?" until reaching the underlying cause:
+### Fix
+[Minimal diff]
+**Behavior change for other callers**: [none / what changes]
+**Same pattern elsewhere**: [grep command + hits, or "none found"]
 
-```
-Bug: API timeout
-→ Why? Slow database query
-→ Why? Missing index
-→ Why? Schema not designed for this access pattern
-→ Root cause: Add index + review schema design
-```
+### Verification
+- [ ] Regression test `[name]` fails before, passes after — [command + result]
+- [ ] Original reproduction passes — [result]
+- [ ] Surrounding suite passes — [command + result]
 
-### 3.3 Common bug categories to check
-
-- **Logic errors**: Wrong condition, off-by-one, wrong operator
-- **State management**: Race conditions, stale state, memory leaks
-- **Type errors**: Null/undefined, type coercion, unexpected format
-- **Async issues**: Missing await, unhandled promise rejection
-- **Integration bugs**: API contract mismatch, serialization issues
-- **Environment bugs**: Config differences, version mismatches
-
----
-
-## PHASE 4: Propose a Fix
-
-### 4.1 Pre-fix checklist
-
-- [ ] Root cause understood — not just the symptom
-- [ ] Data flow traced from input to error point
-- [ ] Edge cases considered
-- [ ] Fix does not break other functionality
-- [ ] Backward compatibility considered
-- [ ] Any remaining assumptions clearly noted
-
-### 4.2 Fix output format
-
-```
-🔍 ANALYSIS
-- Bug and observed symptom
-- Trace from input to error point
-- Files and functions reviewed
-
-🎯 ROOT CAUSE
-- Underlying cause of the bug
-- Why it produces that symptom
-
-🛠️ PROPOSED FIX
-- Specific code fix with explanation
-- Why this fix addresses the root cause
-
-⚠️ WARNINGS
-- Possible side effects
-- Other places to check
-- Breaking changes if any
-
-✅ VERIFICATION
-- How to test that the fix works
-- Edge cases to test
-- Regression tests to add
-
-❓ STILL UNKNOWN (if any)
-- Information that is still unclear
-- Assumptions being made
-- Questions for the user to confirm
+### Open questions (Medium/Low only)
+- [question or check that would raise confidence]
 ```
 
----
-
-## PHASE 5: Verify & Follow-up
-
-### 5.1 Suggest test cases
-
-```
-Test 1: Happy path — [description]
-Test 2: Edge case — null/empty input
-Test 3: Edge case — concurrent requests
-Test 4: Regression — [related feature]
-```
-
-### 5.2 Monitoring suggestions (when applicable)
-
-- Logs to add for ongoing monitoring
-- Metrics to track
-- Alerts to set up
-
----
-
-## Special Rules
-
-### When reading code from files
-
-1. Read the specified file first
-2. Identify imports and dependencies
-3. Find and read related files
-4. Trace the call chain from the entry point
-
-### When given an error message
-
-1. Parse the error type and location
-2. Find the file and line number mentioned
-3. Trace back from the error point to understand context
-4. Check the conditions that led to the error
-
-### When the bug is intermittent
-
-1. Ask about timing and frequency
-2. Check for race conditions
-3. Check caching issues
-4. Check external dependencies (network, third-party APIs)
-
-### When information is insufficient
-
-**Do NOT guess.** Instead:
-1. List what is already known
-2. List what additional information is needed
-3. Ask the user specific questions
-4. Suggest steps to gather more info (logs, debugging steps)
-
----
-
-## Output Confidence Levels
-
-When proposing a fix, indicate the confidence level:
-
-- **🟢 HIGH**: Fully traced, reproduced, root cause is clear
-- **🟡 MEDIUM**: Some assumptions made — user confirmation needed
-- **🔴 LOW**: Significant information missing — this is a hypothesis only
-
-If confidence is MEDIUM or LOW, always include clarifying questions.
+For the fast path, use only the title, Confidence, Root cause, Fix, and a one-line Verification. Omit sections that don't apply rather than filling them with "N/A".

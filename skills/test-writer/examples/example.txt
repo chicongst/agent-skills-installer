@@ -1,7 +1,7 @@
 # Example: /test-writer
 
 ## User Input
-Write tests for this discount calculation function:
+Write tests for this discount calculation function (it lives in `pricing.py`):
 
 ```python
 def calculate_discount(price: float, user_tier: str, coupon_code: str | None = None) -> float:
@@ -28,109 +28,116 @@ def calculate_discount(price: float, user_tier: str, coupon_code: str | None = N
 
 # Test Plan: calculate_discount()
 
-## Test Strategy
-- **Type**: Unit tests
-- **Framework**: pytest
-- **Key behaviors**: Tier discounts, coupon discounts, discount cap, input validation
-- **Out of scope**: Database, network calls (pure function — none needed)
+## Scope & Assumptions
+- **Unit**: `calculate_discount` in `pricing.py` (line numbers below count from the `def` line as line 1)
+- **Level**: Unit — pure function, no I/O
+- **Framework & location**: pytest, `test_pricing.py` next to `pricing.py` (no existing tests were shown, so pytest is the stated default for Python)
+- **Spec source**: the docstring ("final price after discounts") and the comment on line 17 ("max 50% discount"); no ticket provided
+- **Assumptions**: tiers other than "premium"/"enterprise" and coupons other than "SAVE10"/"SAVE20" are intentionally worth 0%
+- **Out of scope**: callers and persistence — the function is pure
+
+## Findings
+| ID | Severity | Location | Finding | Evidence | Suggested action |
+|----|----------|----------|---------|----------|------------------|
+| F1 | 🟡 MINOR | pricing.py:17 | The 50% cap is unreachable dead code. The largest tier discount is 0.20 (line 10) and the largest coupon is 0.20 (line 15); each `if/elif` chain adds at most one rate, so the discount never exceeds 0.40 and `min(discount, 0.50)` always returns `discount`. Line coverage still marks line 17 as covered. | Enumerated all 9 tier × coupon combinations: maximum is enterprise + SAVE20 → 40% → `calculate_discount(200.0, "enterprise", "SAVE20") == 120.0` | Ask the owner: if 50% is only a future safeguard, keep it and add a test when a combination can exceed it; if the business cap is actually lower (e.g. 30%), the code is wrong today. No test can exercise the cap without changing the code. |
+| F2 | 🟡 MINOR | pricing.py:3 | `NaN` passes the `price <= 0` guard because every comparison with `NaN` is false; `inf` passes too. | `calculate_discount(math.nan, "free")` → `nan`; `calculate_discount(math.inf, "free")` → `inf` | Validate with `if not math.isfinite(price) or price <= 0:`. Raise to 🟠 MAJOR if `price` can come from user input or a parsed feed. |
+| F3 | 🟡 MINOR | pricing.py:7-15 | Tier and coupon matching is case-sensitive and not trimmed; the spec does not say whether "Premium" or "save10 " should match. | `calculate_discount(100.0, "Premium", coupon_code="save10")` → `100.0` | Ask the owner. Current behavior is pinned in a characterization test. |
 
 ## Test Cases
-
-### Critical Path (happy path)
-| Test | Input | Expected |
-|------|-------|----------|
-| No discount (free tier) | price=100, tier="free" | 100.00 |
-| Premium discount | price=100, tier="premium" | 90.00 |
-| Enterprise discount | price=100, tier="enterprise" | 80.00 |
-| Coupon SAVE10 only | price=100, tier="free", coupon="SAVE10" | 90.00 |
-| Combined tier + coupon | price=100, tier="premium", coupon="SAVE10" | 80.00 |
-
-### Edge Cases
-| Test | Input | Expected | Why It Matters |
-|------|-------|----------|---------------|
-| Discount cap enforced | price=100, tier="enterprise", coupon="SAVE20" | 50.00 | 40% would be 60%, capped at 50% |
-| Unknown coupon ignored | price=100, coupon="INVALID" | 100.00 | Invalid coupons must not give discount |
-| Unknown tier gets no discount | price=100, tier="vip" | 100.00 | New tiers shouldn't silently get discounts |
-| Decimal price rounds correctly | price=99.99, tier="premium" | 89.99 | Floating point precision |
-| Minimum valid price | price=0.01, tier="free" | 0.01 | Just above zero boundary |
-
-### Error Handling
-| Test | Input | Expected Error |
-|------|-------|---------------|
-| Zero price | price=0 | ValueError("Price must be positive") |
-| Negative price | price=-10 | ValueError("Price must be positive") |
+| # | Category | Test name | Input | Expected | Derivation | Protects against |
+|---|----------|-----------|-------|----------|------------|------------------|
+| 1 | Happy | test_tier_and_coupon_discounts_stack_additively | 100, free, None | 100.00 | 100 × (1 − 0) | Discount applied with no tier/coupon |
+| 2 | Happy | (same, parametrized) | 100, premium, None | 90.00 | 100 × (1 − 0.10) | Wrong tier rate |
+| 3 | Happy | (same) | 100, enterprise, None | 80.00 | 100 × (1 − 0.20) | Wrong tier rate |
+| 4 | Happy | (same) | 100, free, SAVE10 | 90.00 | 100 × (1 − 0.10) | Wrong coupon rate |
+| 5 | Happy | (same) | 100, free, SAVE20 | 80.00 | 100 × (1 − 0.20) | Wrong coupon rate |
+| 6 | Happy | (same) | 100, premium, SAVE10 | 80.00 | 100 × (1 − 0.10 − 0.10) | Stacking replaced by max() or multiplication |
+| 7 | Happy | (same) | 100, premium, SAVE20 | 70.00 | 100 × (1 − 0.10 − 0.20) | Stacking bug |
+| 8 | Happy | (same) | 100, enterprise, SAVE10 | 70.00 | 100 × (1 − 0.20 − 0.10) | Stacking bug |
+| 9 | Happy | (same) | 100, enterprise, SAVE20 | 60.00 | 100 × (1 − 0.20 − 0.20) | Stacking bug |
+| 10 | Boundary | test_largest_possible_stack_is_40_percent_so_50_percent_cap_never_applies | 200, enterprise, SAVE20 | 120.00 | 200 × (1 − 0.40); cap not reached (F1) | Someone "fixing" the cap into a lower value, or new stacking that silently exceeds 40% |
+| 11 | Boundary | test_unknown_tier_gets_no_discount | 100, vip, None | 100.00 | no branch matches | New tiers getting a discount by accident |
+| 12 | Boundary | test_unknown_coupon_gets_no_discount | 100, free, "FAKE50" | 100.00 | no branch matches | Arbitrary codes granting discounts |
+| 13 | Characterization | test_tier_and_coupon_matching_is_case_sensitive | 100, "Premium", "save10" | 100.00 | exact `==` match on lines 7 and 12 (F3) | Silent change to matching rules |
+| 14 | Boundary | test_result_is_rounded_to_cents | 99.99, premium | 89.99 | 99.99 × 0.90 = 89.991 → 89.99 | Missing or wrong rounding |
+| 15 | Boundary | test_smallest_cent_price_with_max_discount_rounds_up_to_one_cent | 0.01, enterprise, SAVE20 | 0.01 | 0.01 × 0.60 = 0.006 → 0.01 | Truncation instead of rounding |
+| 16–18 | Error | test_non_positive_price_raises_value_error | 0, −0.01, −50.0 | ValueError("Price must be positive") | guard on line 3; 0 is the exact boundary | Guard changed to `< 0` |
+| 19 | Error | test_nan_price_is_rejected | NaN | ValueError (expected to fail until F2 is fixed) | intended behavior; currently returns nan (F2) | NaN prices reaching checkout |
 
 ## Test Code
 
 ```python
+import math
+
 import pytest
+
 from pricing import calculate_discount
 
 
-class TestCalculateDiscountTiers:
-    def test_free_tier_no_discount(self):
-        assert calculate_discount(100.0, "free") == 100.00
-
-    def test_premium_tier_applies_10_percent(self):
-        assert calculate_discount(100.0, "premium") == 90.00
-
-    def test_enterprise_tier_applies_20_percent(self):
-        assert calculate_discount(100.0, "enterprise") == 80.00
-
-    def test_unknown_tier_gets_no_discount(self):
-        # Important: new tiers added later should not silently get discounts
-        assert calculate_discount(100.0, "vip_special") == 100.00
-
-
-class TestCalculateDiscountCoupons:
-    def test_save10_coupon_applies_10_percent(self):
-        assert calculate_discount(100.0, "free", coupon_code="SAVE10") == 90.00
-
-    def test_save20_coupon_applies_20_percent(self):
-        assert calculate_discount(100.0, "free", coupon_code="SAVE20") == 80.00
-
-    def test_invalid_coupon_gives_no_discount(self):
-        assert calculate_discount(100.0, "free", coupon_code="FAKE50") == 100.00
-
-    def test_none_coupon_gives_no_discount(self):
-        assert calculate_discount(100.0, "free", coupon_code=None) == 100.00
+@pytest.mark.parametrize(
+    ("tier", "coupon", "expected"),
+    [
+        ("free", None, 100.00),
+        ("premium", None, 90.00),
+        ("enterprise", None, 80.00),
+        ("free", "SAVE10", 90.00),
+        ("free", "SAVE20", 80.00),
+        ("premium", "SAVE10", 80.00),
+        ("premium", "SAVE20", 70.00),
+        ("enterprise", "SAVE10", 70.00),
+        ("enterprise", "SAVE20", 60.00),
+    ],
+)
+def test_tier_and_coupon_discounts_stack_additively(tier, coupon, expected):
+    assert calculate_discount(100.0, tier, coupon_code=coupon) == expected
 
 
-class TestCalculateDiscountCombined:
-    def test_premium_plus_save10_stacks(self):
-        # 10% + 10% = 20% discount
-        assert calculate_discount(100.0, "premium", coupon_code="SAVE10") == 80.00
-
-    def test_enterprise_plus_save20_capped_at_50_percent(self):
-        # 20% + 20% = 40% → would be 60, but capped at 50%
-        assert calculate_discount(100.0, "enterprise", coupon_code="SAVE20") == 50.00
-
-    def test_cap_enforced_not_exceeded(self):
-        # Verify cap is exactly 50%, not 49% or 51%
-        result = calculate_discount(200.0, "enterprise", coupon_code="SAVE20")
-        assert result == 100.00  # exactly 50% of 200
+def test_largest_possible_stack_is_40_percent_so_50_percent_cap_never_applies():
+    # enterprise (20%) + SAVE20 (20%) is the maximum; the cap on line 17 is not reached (F1)
+    assert calculate_discount(200.0, "enterprise", coupon_code="SAVE20") == 120.00
 
 
-class TestCalculateDiscountEdgeCases:
-    def test_decimal_price_rounds_correctly(self):
-        assert calculate_discount(99.99, "premium") == 89.99
-
-    def test_minimum_valid_price(self):
-        assert calculate_discount(0.01, "free") == 0.01
-
-    def test_large_price(self):
-        assert calculate_discount(10_000.0, "enterprise") == 8_000.00
+def test_unknown_tier_gets_no_discount():
+    assert calculate_discount(100.0, "vip") == 100.00
 
 
-class TestCalculateDiscountValidation:
-    def test_zero_price_raises_value_error(self):
-        with pytest.raises(ValueError, match="Price must be positive"):
-            calculate_discount(0, "free")
+def test_unknown_coupon_gets_no_discount():
+    assert calculate_discount(100.0, "free", coupon_code="FAKE50") == 100.00
 
-    def test_negative_price_raises_value_error(self):
-        with pytest.raises(ValueError, match="Price must be positive"):
-            calculate_discount(-50.0, "premium")
 
-## Remaining Gaps
-- No test for concurrent calls (thread safety — likely not needed for pure function)
-- No property-based tests for floating point edge cases (consider adding with Hypothesis)
+def test_tier_and_coupon_matching_is_case_sensitive():
+    # Current behavior; whether "Premium" / "save10" should match is open question F3
+    assert calculate_discount(100.0, "Premium", coupon_code="save10") == 100.00
+
+
+def test_result_is_rounded_to_cents():
+    # 99.99 * 0.90 = 89.991 -> 89.99
+    assert calculate_discount(99.99, "premium") == 89.99
+
+
+def test_smallest_cent_price_with_max_discount_rounds_up_to_one_cent():
+    # 0.01 * 0.60 = 0.006 -> 0.01
+    assert calculate_discount(0.01, "enterprise", coupon_code="SAVE20") == 0.01
+
+
+@pytest.mark.parametrize("price", [0, -0.01, -50.0])
+def test_non_positive_price_raises_value_error(price):
+    with pytest.raises(ValueError, match="Price must be positive"):
+        calculate_discount(price, "free")
+
+
+@pytest.mark.xfail(strict=True, reason="F2: NaN passes the `price <= 0` guard and is returned as nan")
+def test_nan_price_is_rejected():
+    with pytest.raises(ValueError, match="Price must be positive"):
+        calculate_discount(math.nan, "free")
+```
+
+## Verification
+- **Command**: `pytest -q test_pricing.py` (with the function saved as `pricing.py`, Python 3.10+ for the `str | None` annotation)
+- **Result**: `18 passed, 1 xfailed` — the xfail is F2; `strict=True` makes the suite fail once NaN is rejected, prompting removal of the marker.
+
+## Coverage Gaps
+- The 50% cap on line 17 — unreachable, so it cannot be tested without changing the code (F1).
+- Sub-cent prices: `calculate_discount(0.004, "free")` returns `0.0`, so a positive price becomes free — not tested because callers presumably pass whole cents (unconfirmed assumption); ask whether prices below 0.01 should be rejected.
+- Non-string `user_tier` / `coupon_code` (e.g. `None` tier) — type hints exclude them; low risk unless callers are untyped.
+- Money is `float`; switching to `Decimal` would change the rounding behavior and needs its own tests.

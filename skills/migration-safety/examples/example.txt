@@ -1,171 +1,338 @@
 # Example: /migration-safety
 
 ## User Input
-We need to split the `name` column in our `users` table into `first_name` and
-`last_name`. Table has 8 million rows, live 24/7 with zero-downtime requirement.
-Both old code (reading `name`) and new code (reading `first_name`/`last_name`)
-will run simultaneously during the transition.
+Review our migration. We are splitting `users.name` into `first_name` and `last_name`.
+
+Facts:
+- PostgreSQL 17. `users (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text NOT NULL,
+  email text NOT NULL, ...)`, 8 million rows, live 24/7, zero-downtime requirement.
+- The API is deployed with rolling deploys: old and new API versions serve traffic at the same
+  time during a deploy and during a rollback.
+- Who writes `users.name`: the API (signup, profile update); a nightly CRM import job in a
+  separate repository (bulk COPY plus UPDATEs); support engineers occasionally run ad-hoc UPDATEs.
+- Our migration runner wraps each migration file in a transaction.
+- One streaming replica serves read traffic; replica lag must stay under 30 seconds.
+- Nightly backups with point-in-time recovery.
+- The new API version will read and write only `first_name` / `last_name`.
+
+Draft migration (one file):
+  1  ALTER TABLE users ADD COLUMN first_name text;
+  2  ALTER TABLE users ADD COLUMN last_name text;
+  3  UPDATE users SET first_name = split_part(name, ' ', 1),
+  4                   last_name  = split_part(name, ' ', 2);
+  5  ALTER TABLE users ALTER COLUMN first_name SET NOT NULL;
+  6  ALTER TABLE users ALTER COLUMN last_name SET NOT NULL;
+  7  ALTER TABLE users DROP COLUMN name;
 
 ## Skill Output
 
-# Migration Safety Review: Split users.name → first_name + last_name
+# Migration Safety Review: Split users.name into first_name + last_name
+
+**Engine**: PostgreSQL 17
+**Scale & traffic**: 8M rows, 24/7; one streaming replica (lag budget 30 s); write rate not given
+**Deploy model**: rolling — old and new API versions overlap during deploy and rollback
 
 ## Change Summary
-Rename/split `users.name VARCHAR(255)` into `users.first_name VARCHAR(100)` +
-`users.last_name VARCHAR(100)`. 8M rows, no downtime, dual-read compatibility required.
+Add `first_name` and `last_name`, fill them from `name`, make them NOT NULL, and remove `name`.
+`name` is written by the API, the CRM import job (separate repo), and ad-hoc support SQL, so
+all three must keep working until the last of them stops using `name`.
+
+## Findings
+
+### 🔴 BLOCKER Whole table blocked for the entire migration
+**Where**: draft lines 1–7
+**Problem**: Line 1 takes ACCESS EXCLUSIVE on `users`. The runner wraps the file in one
+transaction, so that lock is held until commit — through the 8M-row UPDATE and both NOT NULL
+scans. Every read and write on `users` waits for the whole migration.
+**Fix**: Separate migrations: catalog-only DDL (Step 1), a batched backfill outside the runner
+(Step 2), and constraint changes in their own short transactions (Step 3).
+
+### 🔴 BLOCKER Code that is still running breaks
+**Where**: draft line 7 (and lines 5–6)
+**Problem**: During the rolling deploy, old API pods still read and write `name`, as do the CRM
+job and ad-hoc SQL. After line 7 every such query errors — an old-code INSERT fails with
+`column "name" of relation "users" does not exist`. Even without line 7, old-code INSERTs that
+set only `name` would violate the new NOT NULL on `first_name`.
+**Fix**: Expand–contract. Keep `name` until every writer and reader has moved; keep both shapes
+in sync with a trigger (Step 1); drop `name` only in Step 6.
+
+### 🟠 MAJOR The split loses data
+**Where**: draft lines 3–4
+**Problem**: `split_part(name, ' ', 2)` keeps only the second word: 'Mary Jane Watson' becomes
+last_name 'Jane' and 'Watson' is lost. A name with leading spaces gets an empty first_name.
+**Fix**: Trim, take the first word as `first_name` and everything after it as `last_name`
+(`split_full_name` in Step 1). Multi-word names still need a product decision — see Go / No-Go.
+
+### 🟠 MAJOR One unbatched UPDATE of 8M rows
+**Where**: draft lines 3–4
+**Problem**: One transaction writes 8M new row versions: it holds a row lock on every row until
+commit (blocking profile updates and the CRM job), produces a WAL burst the replica must replay
+against a 30 s lag budget, and leaves 8M dead tuples for autovacuum.
+**Fix**: Batched backfill by primary-key range, one commit per batch, throttled (Step 2).
+
+### 🟠 MAJOR SET NOT NULL scans the table under ACCESS EXCLUSIVE
+**Where**: draft lines 5–6
+**Problem**: Even in its own migration, each `SET NOT NULL` scans 8M rows while blocking all
+reads and writes.
+**Fix**: `CHECK (… IS NOT NULL) NOT VALID`, then `VALIDATE` (does not block reads or writes),
+then `SET NOT NULL`, which skips the scan because of the validated CHECK (Step 3).
+
+### 🟠 MAJOR No lock_timeout
+**Where**: draft (whole file)
+**Problem**: If any transaction is open on `users` when line 1 runs, the ALTER waits for it, and
+every query that arrives after the ALTER queues behind it — including plain SELECTs.
+**Fix**: `SET LOCAL lock_timeout = '3s'` in every DDL migration; retry with backoff on timeout.
 
 ## Risk Assessment
-
 | Risk | Severity | Likelihood | Mitigation |
-|------|----------|-----------|------------|
-| Table lock on column add | High | Low | Use nullable columns with no DEFAULT |
-| Backfill overwhelms DB | High | Medium | Batch updates with rate limiting |
-| Old code breaks after name column removed | Critical | High | Expand-contract: keep name until all code migrated |
-| Incorrect name splitting (e.g., "Mary Jane Watson") | Medium | High | Manual review of edge cases before backfill |
+|------|----------|------------|------------|
+| Trigger bug corrupts `name` or the new columns | 🔴 BLOCKER | Low | Test every write shape on staging (Go / No-Go); consistency query in Validation |
+| Backfill pushes replica lag past 30 s | 🟠 MAJOR | Medium | Batches + pause; abort at 30 s; resume from last logged range |
+| A writer nobody listed still uses `name` at contract time | 🔴 BLOCKER | Low | Trigger covers it until Step 6; search code and live queries before Step 6 |
+| Names that do not split into first/last cleanly | 🟠 MAJOR | High | Agreed split rule; export mismatches for review before Step 4 |
+| DDL step hits lock_timeout under load | 🟡 MINOR | Medium | Retry with backoff; investigate blockers after repeated failures |
 
-## Unsafe Approach (DO NOT DO)
+## Safe Execution Sequence
 
-```sql
--- This will lock the table for minutes on 8M rows:
-ALTER TABLE users RENAME COLUMN name TO first_name;
-ALTER TABLE users ADD COLUMN last_name VARCHAR(100);
-UPDATE users SET first_name = split_part(name, ' ', 1),
-                 last_name = split_part(name, ' ', 2);
-```
+### Step 1 — EXPAND: new columns, split function, sync trigger
+- **Runs as**: migration (the runner's transaction)
+- **Lock**: ACCESS EXCLUSIVE (ADD COLUMN, catalog-only) and SHARE ROW EXCLUSIVE (CREATE TRIGGER),
+  held until this short transaction commits
+- **Change**: a trigger rather than dual-write, because writers span a second repository and
+  ad-hoc SQL; row triggers also fire for the CRM job's COPY.
+  ```sql
+  SET LOCAL lock_timeout = '3s';
+  SET LOCAL statement_timeout = '10s';
 
-## Safe Execution Sequence (Expand -> Migrate -> Contract)
+  ALTER TABLE users ADD COLUMN first_name text, ADD COLUMN last_name text;
 
-### Step 1 — EXPAND: Add new columns (nullable, no default)
-**Duration**: ~100ms regardless of table size — no lock
-```sql
-ALTER TABLE users ADD COLUMN first_name VARCHAR(100);
-ALTER TABLE users ADD COLUMN last_name VARCHAR(100);
-```
-**Verification**: `\d users` — confirm both columns exist, nullable, null for all rows.
+  CREATE FUNCTION split_full_name(full_name text, OUT first_part text, OUT last_part text)
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT split_part(btrim(full_name), ' ', 1),
+           btrim(substr(btrim(full_name), length(split_part(btrim(full_name), ' ', 1)) + 2))
+  $$;
 
-### Step 2 — Deploy Code Phase 1: Dual-write
-Deploy code that **writes to both** `name` AND `first_name`/`last_name`, but **reads from `name`**.
-This ensures new rows have all columns populated.
+  CREATE FUNCTION users_sync_name() RETURNS trigger LANGUAGE plpgsql AS $$
+  BEGIN
+    IF TG_OP = 'INSERT' THEN
+      IF NEW.first_name IS NULL THEN                -- writer set only name (old code)
+        SELECT s.first_part, s.last_part INTO NEW.first_name, NEW.last_name
+        FROM split_full_name(NEW.name) s;
+      ELSIF NEW.name IS NULL THEN                   -- writer set only the parts (new code)
+        NEW.name := concat_ws(' ', NEW.first_name, NULLIF(NEW.last_name, ''));
+      END IF;
+    ELSIF NEW.name IS DISTINCT FROM OLD.name
+          AND NEW.first_name IS NOT DISTINCT FROM OLD.first_name
+          AND NEW.last_name  IS NOT DISTINCT FROM OLD.last_name THEN   -- old code changed name
+      SELECT s.first_part, s.last_part INTO NEW.first_name, NEW.last_name
+      FROM split_full_name(NEW.name) s;
+    ELSIF NEW.name IS NOT DISTINCT FROM OLD.name
+          AND OLD.first_name IS NOT NULL                             -- skip backfill updates
+          AND (NEW.first_name IS DISTINCT FROM OLD.first_name
+               OR NEW.last_name IS DISTINCT FROM OLD.last_name) THEN -- new code changed parts
+      NEW.name := concat_ws(' ', NEW.first_name, NULLIF(NEW.last_name, ''));
+    END IF;
+    RETURN NEW;
+  END $$;
 
-```python
-# Phase 1 code (writes to all, reads from name)
-def create_user(first_name, last_name):
-    full_name = f"{first_name} {last_name}"
-    db.execute("""
-        INSERT INTO users (name, first_name, last_name)
-        VALUES (%s, %s, %s)
-    """, (full_name, first_name, last_name))
-```
+  CREATE TRIGGER users_sync_name BEFORE INSERT OR UPDATE ON users
+  FOR EACH ROW EXECUTE FUNCTION users_sync_name();
+  ```
+  The BEFORE trigger runs before the NOT NULL check on `name`, so new code may omit `name`.
+- **Duration**: catalog-only; the lock wait is capped at 3 s
+- **Monitor**: blocked-sessions query (Observability)
+- **Abort if**: lock_timeout fires repeatedly — stop and find the blocking transaction
+- **Rollback**:
+  ```sql
+  SET LOCAL lock_timeout = '3s';
+  DROP TRIGGER users_sync_name ON users;
+  ALTER TABLE users DROP COLUMN first_name, DROP COLUMN last_name;
+  DROP FUNCTION users_sync_name();
+  DROP FUNCTION split_full_name(text);
+  DROP PROCEDURE IF EXISTS backfill_user_names(bigint, int, interval);
+  ```
 
-### Step 3 — MIGRATE: Backfill existing rows in batches
-**Duration**: ~20-40 minutes for 8M rows (safe estimate)
+### Step 2 — MIGRATE: batched backfill
+- **Runs as**: a dedicated psql session, not the migration runner (the procedure commits per
+  batch, which fails inside the runner's transaction)
+- **Lock**: row locks on one batch at a time; no table lock beyond ROW EXCLUSIVE
+- **Change**:
+  ```sql
+  CREATE PROCEDURE backfill_user_names(start_id bigint DEFAULT 0,
+                                       batch_size int DEFAULT 5000,
+                                       pause interval DEFAULT '100 milliseconds')
+  LANGUAGE plpgsql AS $$
+  DECLARE
+    lo     bigint := start_id;
+    max_id bigint;
+    n      bigint;
+  BEGIN
+    SELECT max(id) INTO max_id FROM users;   -- rows inserted later are filled by the trigger
+    WHILE lo <= max_id LOOP
+      UPDATE users u
+         SET (first_name, last_name) =
+             (SELECT s.first_part, s.last_part FROM split_full_name(u.name) s)
+       WHERE u.id >= lo AND u.id < lo + batch_size
+         AND u.first_name IS NULL;
+      GET DIAGNOSTICS n = ROW_COUNT;
+      COMMIT;
+      RAISE NOTICE 'ids [%, %): % rows', lo, lo + batch_size, n;
+      lo := lo + batch_size;
+      PERFORM pg_sleep_for(pause);
+    END LOOP;
+  END $$;
 
-```python
-# Run as a background job, NOT during deploy
-import time
+  SET statement_timeout = 0;      -- the whole CALL is one statement
+  SET lock_timeout = '2s';        -- still bounds every row-lock wait inside it
+  CALL backfill_user_names();
+  ```
+  5,000 rows and 100 ms are starting values, not measurements; tune them on staging against the
+  30 s replica-lag budget. The trigger leaves `name` untouched during backfill updates.
+- **Duration**: unknown — time the first batches on a production-sized staging copy and
+  extrapolate to 8M rows (about 1,600 batches of 5,000)
+- **Monitor**: the NOTICE log (last range), replica lag, dead tuples, blocked sessions
+- **Abort if**: `replay_lag` ≥ 30 s, or API error rates on signup/profile rise. Stop with
+  `SELECT pg_cancel_backend(<pid>);` — committed batches stay; resume with
+  `CALL backfill_user_names(<last logged lo>);`
+- **Rollback**: none needed for the data (`name` is never modified); to undo fully, Step 1 rollback
 
-BATCH_SIZE = 1000
-SLEEP_SECONDS = 0.1  # rate limiting — adjust based on DB load
+### Step 3 — MIGRATE: NOT NULL without a blocking scan
+- **Runs as**: three separate migrations, only after the backfill reports zero missing rows
+- **Lock**: 3a ACCESS EXCLUSIVE (brief); 3b SHARE UPDATE EXCLUSIVE during the scan (reads and
+  writes continue); 3c ACCESS EXCLUSIVE (brief, no scan)
+- **Change**:
+  ```sql
+  -- 3a
+  SET LOCAL lock_timeout = '3s';
+  SET LOCAL statement_timeout = '10s';
+  ALTER TABLE users
+    ADD CONSTRAINT users_first_name_nn CHECK (first_name IS NOT NULL) NOT VALID,
+    ADD CONSTRAINT users_last_name_nn  CHECK (last_name  IS NOT NULL) NOT VALID;
 
-def backfill_names():
-    last_id = None
-    total_updated = 0
+  -- 3b
+  SET LOCAL lock_timeout = '3s';
+  SET LOCAL statement_timeout = 0;  -- full scan; SHARE UPDATE EXCLUSIVE does not block reads/writes
+  ALTER TABLE users VALIDATE CONSTRAINT users_first_name_nn;
+  ALTER TABLE users VALIDATE CONSTRAINT users_last_name_nn;
 
-    while True:
-        if last_id:
-            rows = db.query("""
-                SELECT id, name FROM users
-                WHERE id > %s AND first_name IS NULL
-                ORDER BY id LIMIT %s
-            """, (last_id, BATCH_SIZE))
-        else:
-            rows = db.query("""
-                SELECT id, name FROM users
-                WHERE first_name IS NULL
-                ORDER BY id LIMIT %s
-            """, (BATCH_SIZE,))
+  -- 3c
+  SET LOCAL lock_timeout = '3s';
+  SET LOCAL statement_timeout = '10s';
+  ALTER TABLE users ALTER COLUMN first_name SET NOT NULL,
+                    ALTER COLUMN last_name  SET NOT NULL;   -- proven by the CHECKs: no scan
+  ALTER TABLE users DROP CONSTRAINT users_first_name_nn,
+                    DROP CONSTRAINT users_last_name_nn;
+  ```
+- **Duration**: 3a and 3c catalog-only; 3b one scan of 8M rows — time it on staging
+- **Monitor**: blocked-sessions query; `SET client_min_messages = debug1` on staging shows
+  "existing constraints on column … are sufficient to prove that it does not contain nulls"
+- **Abort if**: 3b reports a violating row — rerun the backfill for the missing rows, then retry
+- **Rollback**:
+  ```sql
+  SET LOCAL lock_timeout = '3s';
+  ALTER TABLE users ALTER COLUMN first_name DROP NOT NULL,
+                    ALTER COLUMN last_name  DROP NOT NULL;
+  ```
+  (before 3c: `ALTER TABLE users DROP CONSTRAINT users_first_name_nn, DROP CONSTRAINT users_last_name_nn;`)
 
-        if not rows:
-            break
+### Step 4 — DEPLOY: new API version
+- **Runs as**: rolling app deploy
+- **Lock**: none
+- **Change**: the API reads and writes `first_name` / `last_name` only; the trigger keeps `name`
+  current for old pods, the CRM job, and ad-hoc SQL. New code writes '' — not NULL — for a
+  missing last name (`last_name` is NOT NULL after Step 3)
+- **Duration**: one rolling deploy
+- **Monitor**: signup and profile-update error rates; consistency query (Validation)
+- **Abort if**: error rate rises or the consistency query returns unexpected rows
+- **Rollback**: redeploy the previous API version and keep the new columns and trigger —
+  `name` is current for every row
 
-        for row in rows:
-            parts = row['name'].split(' ', 1)
-            first = parts[0]
-            last = parts[1] if len(parts) > 1 else ''
-            db.execute("""
-                UPDATE users SET first_name = %s, last_name = %s
-                WHERE id = %s
-            """, (first, last, row['id']))
+### Step 5 — DEPLOY: move the remaining writers and readers
+- **Runs as**: CRM job release in its repository; update the support runbooks
+- **Lock**: none
+- **Change**: CRM import and support SQL use `first_name` / `last_name`
+- **Duration**: then a bake period (assumption: one week — not given in the input)
+- **Monitor**: the CRM job's success after each nightly run
+- **Abort if**: the job fails — revert the job; `name` still exists and stays in sync
+- **Rollback**: revert the job release
 
-        last_id = rows[-1]['id']
-        total_updated += len(rows)
-        print(f"Backfilled {total_updated} rows...")
-        time.sleep(SLEEP_SECONDS)
-
-    print(f"Backfill complete: {total_updated} rows")
-```
-
-**Monitor during backfill**:
-```sql
--- Progress check
-SELECT COUNT(*) FROM users WHERE first_name IS NULL;
--- DB load check
-SELECT * FROM pg_stat_activity WHERE state = 'active';
-```
-
-### Step 4 — Add NOT NULL constraints (after backfill complete)
-```sql
--- Verify zero nulls first:
-SELECT COUNT(*) FROM users WHERE first_name IS NULL OR last_name IS NULL;
--- Should return 0
-
-ALTER TABLE users ALTER COLUMN first_name SET NOT NULL;
-ALTER TABLE users ALTER COLUMN last_name SET NOT NULL;
-```
-
-### Step 5 — Deploy Code Phase 2: Read from new columns
-Deploy code that reads from `first_name`/`last_name` but still writes `name` for backward compat.
-**Rollback**: Revert to Phase 1 code (reads from `name` again).
-
-### Step 6 — CONTRACT: Drop old column (next release, separate PR)
-Only after Phase 2 has been stable for 1+ week:
-```sql
-ALTER TABLE users DROP COLUMN name;
-```
+### Step 6 — CONTRACT: drop `name` (separate PR, point of no return)
+- **Runs as**: archive copy, then one migration
+- **Lock**: ACCESS EXCLUSIVE (DROP TRIGGER, DROP COLUMN — catalog-only), brief
+- **Change**: first confirm no code or live query still uses `name` — search every repository,
+  and run `SELECT query FROM pg_stat_activity WHERE query ~* '\mname\M' AND pid <> pg_backend_pid();`
+  repeatedly (or search `pg_stat_statements` if it is installed; `\m…\M` does not match `first_name`).
+  ```sql
+  CREATE TABLE users_name_archive AS SELECT id, name FROM users;
+  ```
+  ```sql
+  SET LOCAL lock_timeout = '3s';
+  SET LOCAL statement_timeout = '10s';
+  DROP TRIGGER users_sync_name ON users;
+  ALTER TABLE users DROP COLUMN name;
+  DROP FUNCTION users_sync_name();
+  DROP FUNCTION split_full_name(text);
+  DROP PROCEDURE backfill_user_names(bigint, int, interval);
+  ```
+  The trigger and the column go in the same transaction: with the trigger gone and `name`
+  still NOT NULL, new-code INSERTs would fail.
+- **Duration**: catalog-only after the archive copy (a read-only full scan)
+- **Monitor**: API and CRM job error rates
+- **Abort if**: any `column "name" … does not exist` error — see Rollback Plan
+- **Rollback**: none in place; see Rollback Plan
 
 ## Compatibility Matrix
-
-| Code Phase | name column | first/last columns | Compatible |
-|-----------|-------------|-------------------|------------|
-| Old code (before migration) | Reads/writes | N/A | Yes (Step 1 safe) |
-| Phase 1 (dual-write) | Writes | Writes | Yes |
-| Phase 2 (new reads) | Writes (compat) | Reads/writes | Yes |
-| After column drop | Removed | Reads/writes | Yes |
+| Code version | Before Step 1 | After Steps 1–3 | After Step 6 | Compatible? |
+|--------------|---------------|-----------------|--------------|-------------|
+| Old API (name only) | ✅ | ✅ trigger fills the parts | ❌ | Must be fully replaced before Step 6 |
+| New API (parts only) | ❌ columns missing | ✅ trigger fills `name` | ✅ | Deploy only after Step 3 |
+| CRM job, unchanged | ✅ | ✅ (COPY fires the trigger) | ❌ | Must be migrated in Step 5 |
+| Ad-hoc SQL on `name` | ✅ | ✅ | ❌ | Runbooks updated in Step 5 |
 
 ## Rollback Plan
+**Trigger**: signup/profile error rate rises, consistency query shows corrupted names, replica
+lag ≥ 30 s that pausing the backfill does not fix, or any error referencing `name` after Step 6.
+**Point of no return**: Step 6.
+| Step | Rollback | Data impact |
+|------|----------|-------------|
+| 1 | Drop trigger, columns, functions (SQL in Step 1) — only before Step 4; afterwards redeploy old code and keep them | None — `name` untouched |
+| 2 | Cancel the CALL; Step 1 rollback if abandoning the change | None — `name` untouched |
+| 3 | DROP NOT NULL / drop the CHECKs (SQL in Step 3) | None |
+| 4 | Redeploy previous API version | None — trigger kept `name` current |
+| 5 | Revert the CRM job release | None |
+| 6 | Re-add `name` as nullable; fill from `users_name_archive`, and from `concat_ws(' ', first_name, NULLIF(last_name, ''))` for rows not in the archive; redeploy old code; or point-in-time recovery | Rows edited between the archive and the drop revert to the archived name; rows not in the archive get a name rebuilt from the parts (whitespace normalized) |
 
-- **Steps 1-3**: Rollback by deploying old code. `name` column untouched. Zero impact.
-- **Step 4 (NOT NULL)**: `ALTER TABLE users ALTER COLUMN first_name DROP NOT NULL;`
-- **Step 5**: Revert to Phase 1 code deploy.
-- **Step 6 (DROP COLUMN)**: Column gone — restore from backup or re-add + re-backfill. **No easy rollback — do not rush this step.**
+## Observability
+```sql
+-- Sessions waiting on a lock, and who blocks them
+SELECT pid, pg_blocking_pids(pid) AS blocked_by, wait_event_type, now() - query_start AS waiting, left(query, 60) AS query
+FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;
+-- Replica lag (abort the backfill at 30 s)
+SELECT application_name, state, replay_lag FROM pg_stat_replication;
+-- Dead tuples and autovacuum progress during the backfill
+SELECT n_live_tup, n_dead_tup, last_autovacuum FROM pg_stat_user_tables WHERE relname = 'users';
+```
+Plus the API's signup/profile error rates and the CRM job result, from existing dashboards.
 
 ## Validation Queries
-
 ```sql
--- After backfill: confirm zero nulls
-SELECT COUNT(*) FROM users WHERE first_name IS NULL;
-
--- Spot check name splitting quality
-SELECT name, first_name, last_name FROM users
-WHERE name NOT LIKE first_name || ' ' || last_name
-LIMIT 20;  -- Review these manually — hyphenated names, initials, etc.
-
--- After Phase 2: confirm reads working
-SELECT first_name, last_name FROM users LIMIT 10;
+-- After Step 2: must be 0
+SELECT count(*) AS missing_parts FROM users WHERE first_name IS NULL OR last_name IS NULL;
+-- Rows where the parts do not rebuild the original name (extra spaces, etc.) — review manually
+SELECT id, name, first_name, last_name FROM users
+WHERE name IS DISTINCT FROM concat_ws(' ', first_name, NULLIF(last_name, ''))
+ORDER BY id LIMIT 50;
+-- Multi-word last names that need the product decision
+SELECT count(*) AS multi_word_last_names FROM users WHERE last_name LIKE '% %';
+-- The trigger is installed and enabled until Step 6
+SELECT tgname, tgenabled FROM pg_trigger WHERE tgrelid = 'users'::regclass AND NOT tgisinternal;
 ```
 
 ## Go / No-Go
-**SAFE** — with the expand-contract sequence above. Total timeline: ~1 week across 3 deploys.
-
-Do NOT compress into a single migration + deploy. The zero-downtime guarantee
-requires the 3-phase approach.
+**NO-GO** for the draft (two BLOCKERs, four MAJORs). **GO WITH CONDITIONS** for Steps 1–6
+above — each item below needs an owner and a deadline, and is re-checked before Step 1 starts.
+- [ ] Trigger tested on a production-sized staging copy for: old-code INSERT, new-code INSERT (with '' — not NULL — for a missing last name), old-code `name` UPDATE, new-code parts UPDATE, CRM COPY
+- [ ] Backfill timed on staging; batch size and pause keep replica lag under 30 s
+- [ ] A point-in-time recovery restore has been rehearsed
+- [ ] Product owner has approved the split rule for multi-word names
+- [ ] Step 6 is a separate PR, scheduled after Step 5's bake period

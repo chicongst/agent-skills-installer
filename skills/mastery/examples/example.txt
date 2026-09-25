@@ -1,63 +1,65 @@
-# Example: /mastery skill in action
+# Example: mastery applied while writing code
 
-## User Request
+## User request
 
-"Write a function to send notification emails to all users who haven't logged in for 30 days"
+"Write a function to send notification emails to all users who haven't logged in for 30 days."
 
-## Without Skill (naive approach)
+Context in the repo: Python service, PostgreSQL via psycopg 3 with `autocommit=True` and `row_factory=dict_row` connections, table `users(id, email, name, last_login timestamptz, notified_at timestamptz)`. `app.email` defines `EmailDeliveryError`; the injected `email_service.send(to=, template=, context=)` raises it when one recipient fails. An email template named `inactive_reminder` exists and takes `name`.
+
+## Without the skill
 
 ```python
 def send_inactive_notifications():
-    users = db.query("SELECT * FROM users WHERE last_login < NOW() - INTERVAL 30 DAY")
+    users = db.query("SELECT * FROM users WHERE last_login < NOW() - INTERVAL '30 days'")
     for user in users:
         send_email(user["email"], "We miss you!", f"Hi {user['name']}, come back!")
-        db.query(f"UPDATE users SET notified = 1 WHERE id = {user['id']}")
+        db.query(f"UPDATE users SET notified_at = NOW() WHERE id = {user['id']}")
     return {"sent": len(users)}
 ```
 
 Problems:
-- Loads ALL inactive users into memory (could be millions)
-- No error handling — one email failure stops everything
-- SQL injection via string interpolation
-- No logging or tracking
-- No rate limiting — could overwhelm email provider
-- Not idempotent — no check if already notified
+- `SELECT *` with no LIMIT loads every inactive user and every column in one result.
+- The UPDATE is built by string interpolation — safe here only because `id` is an integer from the DB.
+- One failed email raises and aborts the rest of the run.
+- Not idempotent: the SELECT ignores `notified_at`, so every re-run emails the same users again.
+- Nothing is logged, so there is no record of the run's outcome or of failures.
 
-## With Skill (senior approach)
+## With the skill (the entire response)
 
 ```python
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+from app.email import EmailDeliveryError
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 100
-MAX_RETRIES = 3
 
-def send_inactive_notifications(
-    db,
-    email_service,
-    inactive_days=30,
-    batch_size=BATCH_SIZE,
-):
-    cutoff = datetime.utcnow() - timedelta(days=inactive_days)
-    total_sent = 0
-    total_failed = 0
+def send_inactive_notifications(conn, email_service, inactive_days=30, batch_size=100):
+    """Email users inactive for `inactive_days` who were not notified since their last login.
+
+    `conn` is a psycopg 3 connection opened with autocommit=True and row_factory=dict_row,
+    so each UPDATE commits immediately. Safe to re-run: notified users are skipped and
+    users whose delivery failed are picked up again on the next run.
+    """
+    if not conn.autocommit:
+        raise ValueError("send_inactive_notifications needs an autocommit connection")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=inactive_days)
+    sent = failed = 0
     last_id = 0
 
     while True:
-        users = db.execute(
+        users = conn.execute(
             """
             SELECT id, email, name FROM users
-            WHERE last_login < :cutoff
-              AND notified_at IS NULL
-              AND id > :last_id
+            WHERE last_login < %(cutoff)s
+              AND (notified_at IS NULL OR notified_at < last_login)
+              AND id > %(last_id)s
             ORDER BY id
-            LIMIT :batch_size
+            LIMIT %(limit)s
             """,
-            {"cutoff": cutoff, "last_id": last_id, "batch_size": batch_size},
-        )
-
+            {"cutoff": cutoff, "last_id": last_id, "limit": batch_size},
+        ).fetchall()
         if not users:
             break
 
@@ -69,32 +71,35 @@ def send_inactive_notifications(
                     template="inactive_reminder",
                     context={"name": user["name"]},
                 )
-                db.execute(
-                    "UPDATE users SET notified_at = :now WHERE id = :id",
-                    {"now": datetime.utcnow(), "id": user["id"]},
+            except EmailDeliveryError as exc:
+                logger.warning(
+                    "Inactive reminder not delivered",
+                    extra={"user_id": user["id"], "error": type(exc).__name__},
                 )
-                total_sent += 1
-            except Exception:
-                logger.exception(
-                    "Failed to send notification",
-                    extra={"user_id": user["id"]},
-                )
-                total_failed += 1
+                failed += 1
+                continue
+            conn.execute(
+                "UPDATE users SET notified_at = now() WHERE id = %(id)s",
+                {"id": user["id"]},
+            )
+            sent += 1
 
-    logger.info(
-        "Inactive notification batch complete",
-        extra={"sent": total_sent, "failed": total_failed},
-    )
-    return {"sent": total_sent, "failed": total_failed}
+    logger.info("Inactive reminders finished", extra={"sent": sent, "failed": failed})
+    return {"sent": sent, "failed": failed}
 ```
 
-## Principles Applied Silently
+Assumes one reminder per inactivity period: a user who logs in again and goes inactive later gets a new reminder. Delivery is at-least-once — if the process dies between `send()` and the UPDATE, that one user is emailed again on the next run.
 
-- Chunking/batch processing: cursor-based pagination with LIMIT + last_id
-- Query safety: parameterized queries, select only needed columns
-- Idempotency: notified_at check prevents duplicate sends
-- Error isolation: one failure doesn't stop the batch
-- Dependency injection: db and email_service injected for testability
-- Structured logging: context-rich, no PII leakage
-- Configuration: batch_size and inactive_days are parameters, not hardcoded
-- Resumable: cursor-based (last_id) allows restart from any point
+## Why it looks this way (explanation for this example — not part of the response)
+
+- **Precedence** — uses the repo's psycopg connection, the injected `email_service`, its `send()` signature and template, and imports `EmailDeliveryError` from `app.email` instead of redefining it or inventing a wrapper.
+- **Data access** — explicit columns, parameters for every value, keyset pagination (`id > last_id ORDER BY id LIMIT`) so memory stays bounded and each chunk is a fresh query.
+- **Errors** — the function fails fast with `ValueError` on a non-autocommit connection, where the UPDATEs would not commit until the caller does, so a crash mid-run rolls back every marker and the next run re-emails everyone already sent. Only `EmailDeliveryError` is handled per user; anything else (DB down, provider auth failure) propagates and stops the run instead of being counted as thousands of "failed" users.
+- **Concurrency and idempotency** — `notified_at` is written only after a successful send, so re-runs skip notified users and retry failed ones. Two concurrent runs could still double-send; if the job scheduler cannot guarantee a single runner, claim rows with `SELECT … FOR UPDATE SKIP LOCKED` inside a transaction.
+- **Per-user UPDATE (deliberate exception to "batch small writes")** — marking a whole chunk after sending it would widen the at-least-once window from one user to `batch_size` users on a crash; one indexed UPDATE per email is negligible next to the email call itself.
+- **Time** — cutoff uses `datetime.now(timezone.utc)` against a `timestamptz` column; `notified_at` uses the database clock.
+- **Security** — logs carry `user_id` and the error class, never the email address.
+- **Simplicity** — no retry loop, rate limiter, or config knobs the request did not ask for; `inactive_days` and `batch_size` are parameters because callers and tests need them.
+- **Scope discipline** — the two behavioral choices the request left open are stated in two lines after the code.
+
+Verified: run against PostgreSQL 16 with psycopg 3.3 and a fake email service raising `app.email.EmailDeliveryError`, `batch_size=2` to exercise pagination. First run sent to 3 of 7 users (skipping an active user, a user notified since their last login, and one at 29 days) and counted 1 bounce; the second run sent only to the bounced user; the third sent nothing; a `RuntimeError` from the email service propagated; a non-autocommit connection raised `ValueError` before any query.

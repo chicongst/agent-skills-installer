@@ -1,80 +1,122 @@
 # Example: /debug
 
 ## User Input
-Our order processing service intermittently drops orders — about 1 in 500 orders
-never gets processed. No errors in logs. Started happening after we scaled from
-2 to 5 worker instances last Tuesday. Orders are pulled from a RabbitMQ queue.
-Each worker polls the queue, processes the order, then ACKs.
+`test_regular_invoice` fails in CI but passes on my machine. Can you find out why?
+
+CI runs:  python -m unittest test_billing
+CI log (last lines):
+    FAIL: test_regular_invoice (test_billing.BillingTest.test_regular_invoice)
+      File "test_billing.py", line 13, in test_regular_invoice
+        self.assertEqual(inv["total"], 100.0)
+    AssertionError: 90.0 != 100.0
+    FAILED (failures=1)
+
+Locally I run:  python -m unittest test_billing.BillingTest.test_regular_invoice
+and it passes.
+
+billing.py
+ 1  def build_invoice(items, discounts=[]):
+ 2      for item in items:
+ 3          if item.get("promo"):
+ 4              discounts.append(item["promo"])
+ 5      subtotal = sum(i["price"] * i["qty"] for i in items)
+ 6      total = subtotal
+ 7      for rate in discounts:
+ 8          total -= subtotal * rate
+ 9      return {"subtotal": subtotal, "discounts": discounts, "total": round(total, 2)}
+
+test_billing.py
+ 1  import unittest
+ 2
+ 3  from billing import build_invoice
+ 4
+ 5
+ 6  class BillingTest(unittest.TestCase):
+ 7      def test_promo_applied(self):
+ 8          inv = build_invoice([{"price": 50, "qty": 2, "promo": 0.1}])
+ 9          self.assertEqual(inv["total"], 90.0)
+10
+11      def test_regular_invoice(self):
+12          inv = build_invoice([{"price": 50, "qty": 2}])
+13          self.assertEqual(inv["total"], 100.0)
 
 ## Skill Output
 
-# Debug Report: Intermittent Order Loss (~1/500)
+# Debug Report: test_regular_invoice fails in CI, passes locally
 
-## Symptoms
-- **Observed**: ~0.2% of orders never processed, no error logs
-- **Expected**: All orders processed exactly once
-- **Frequency**: Consistent rate, not random spikes
-- **Started**: After scaling from 2 → 5 worker instances
-- **Key detail**: Silently lost — no error, no dead-letter queue entry
+## Symptom
+- **Expected**: `build_invoice([{"price": 50, "qty": 2}])` returns total `100.0`
+- **Actual**: `AssertionError: 90.0 != 100.0` at test_billing.py:13
+- **Frequency**: fails in CI (user report; run count not given); fails on 3 of 3 local runs of CI's command (see Reproduction)
+- **Environment**: fails in CI (whole module); passes locally (single test by name)
 
 ## Reproduction
-Difficult to reproduce deterministically. Steps to increase probability:
-1. Run 5 workers simultaneously against a queue with 500+ messages
-2. Send rapid bursts (50+ messages/second) while workers are mid-process
-3. Count messages published vs orders in DB — look for discrepancy
+The two runs differ in environment *and* in command, so the first experiment
+removes one of those variables. Running CI's exact command locally:
 
-## Hypotheses
-| # | Hypothesis | Probability | Validation Step |
-|---|-----------|-------------|-----------------|
-| 1 | Message ACK'd before processing completes — crash between ACK and DB write causes silent loss | **High** | Check worker code: where exactly is ACK called relative to DB commit? |
-| 2 | Two workers both dequeue same message (prefetch misconfiguration) — one succeeds, one fails silently | **High** | Enable RabbitMQ management UI, watch delivery count on messages |
-| 3 | Worker timeout kills processing mid-flight, no requeue | **Medium** | Check worker timeout config; look for SIGKILL in system logs |
-| 4 | DB connection pool exhaustion with 5 workers — writes silently fail | **Low** | Check DB connection pool metrics; look for pool timeout errors |
+    $ python -m unittest test_billing
+    .F
+    FAIL: test_regular_invoice (test_billing.BillingTest.test_regular_invoice)
+    AssertionError: 90.0 != 100.0
+    FAILED (failures=1)
+    (traceback trimmed)
 
-## Investigation
+Reproduces locally on 3 of 3 runs. The minimal test-level trigger is H3; the two-call script in H5 is the smallest reproduction.
 
-**Hypothesis 1 check** — review worker code:
-```python
-# BUGGY pattern (likely culprit):
-message = channel.basic_get(queue='orders')
-channel.basic_ack(message.delivery_tag)  # ← ACK BEFORE processing!
-process_order(message.body)              # ← if this fails, message is gone
-```
+## Hypotheses and Experiments
+| # | Hypothesis | Prediction if true | Experiment | Result | Status |
+|---|---|---|---|---|---|
+| H1 | CI environment differs (Python version, dependencies) | CI's command passes locally | `python -m unittest test_billing` locally | `AssertionError: 90.0 != 100.0`, `FAILED (failures=1)` | Eliminated — fails locally too; the command, not the machine, matters |
+| H2 | Float arithmetic in the discount loop (billing.py:7-8) gives a wrong total | test_regular_invoice fails when run alone as well | `python -m unittest test_billing.BillingTest.test_regular_invoice`, 5 runs | `OK` all 5 runs | Eliminated — same input, correct result in isolation. Also, 90.0 is exactly 100 minus 10%, not a rounding error |
+| H3 | Order-dependent state: something left by test_promo_applied affects test_regular_invoice | Fails only when test_promo_applied runs first | Run both orders: `python -m unittest test_billing.BillingTest.test_promo_applied test_billing.BillingTest.test_regular_invoice`, then the reverse order | promo → regular: `FAILED (failures=1)`; regular → promo: `OK` | Confirmed (ordering) — which state leaks is still open |
+| H4 | The tests share a fixture or data object that test_promo_applied mutates | A shared object exists between the two tests | Inspect test_billing.py:6-13 (code reading, no run) | No `setUp`, no module-level data; each test builds its own list literal (lines 8, 12) | Eliminated |
+| H5 | Hidden state inside `build_invoice`: the default `discounts=[]` (billing.py:1) is created once and keeps the promo appended at line 4 | The function's default value changes after a promo call, and the next call without promo sees it | `python -c` script below | Default goes `([],)` → `([0.1],)`; next call returns `'discounts': [0.1], 'total': 90.0` | Confirmed |
 
-This explains the symptom perfectly:
-- ACK removes message from queue immediately
-- If process_order() crashes or times out → order silently lost
-- No error log because the exception may be swallowed by the worker loop
-- Rate increases with more workers because more concurrent processing = more crash surface
+H5 experiment:
+
+    $ python -c "
+    from billing import build_invoice
+    print(build_invoice.__defaults__)
+    build_invoice([{'price': 50, 'qty': 2, 'promo': 0.1}])
+    print(build_invoice.__defaults__)
+    print(build_invoice([{'price': 50, 'qty': 2}]))
+    "
+    ([],)
+    ([0.1],)
+    {'subtotal': 100, 'discounts': [0.1], 'total': 90.0}
 
 ## Root Cause
-**What**: Messages are ACK'd before processing completes
-**Where**: Worker message handler — ACK call precedes DB write
-**Why**: Developer assumed ACK = "received" not "processed" — common RabbitMQ misunderstanding
+**Cause**: `build_invoice` uses a mutable default argument; Python evaluates `discounts=[]` once, at function definition, so every call that omits `discounts` shares one list.
+**Where**: billing.py:1 (the list is mutated at billing.py:4)
+**Causal chain**: test_promo_applied calls `build_invoice` with a promo → line 4 appends `0.1` to the shared default list → test_regular_invoice calls `build_invoice` without `discounts` → gets the same list `[0.1]` → lines 7-8 subtract 10% → total `90.0` → assertion at test_billing.py:13 fails.
+Explains every observation: CI runs the whole module and unittest orders test methods by name, so `test_promo_applied` runs before `test_regular_invoice`; locally only the single test ran, so the default list was still empty. The wrong value is exactly the leaked 10% promo.
+**Confidence**: Proven — the failure turns on with promo → regular order and off with the reverse order or a single test (H3), and the leaked value is observed directly (H5).
 
 ## Fix
 ```python
-# CORRECT pattern: ACK only after successful processing
-message = channel.basic_get(queue='orders')
-try:
-    process_order(message.body)
-    channel.basic_ack(message.delivery_tag)   # ACK after success
-except Exception as e:
-    log.error(f"Order processing failed: {e}")
-    channel.basic_nack(message.delivery_tag, requeue=True)  # NACK → requeue
+def build_invoice(items, discounts=None):
+    if discounts is None:
+        discounts = []
+    for item in items:
+        ...
 ```
+**Why it works**: A new list is created on every call that omits `discounts`, so no state carries over between calls.
+**Risk / behavior change**: None for callers that omit `discounts`, except that the leak is gone. Callers that pass their own list still have it appended to, as before — that is existing behavior and is left unchanged here; changing it would be a separate behavior change.
 
-Also add dead-letter queue for messages that fail repeatedly:
+Regression test (added to BillingTest; order-independent because it makes both calls itself):
 ```python
-# In queue declaration — messages that NACK 3+ times go to orders.dlq
-channel.queue_declare('orders', arguments={
-    'x-dead-letter-exchange': 'orders.dlq',
-    'x-delivery-limit': 3
-})
+    def test_promo_does_not_leak_into_next_invoice(self):
+        build_invoice([{"price": 50, "qty": 2, "promo": 0.1}])
+        inv = build_invoice([{"price": 50, "qty": 2}])
+        self.assertEqual(inv["discounts"], [])
+        self.assertEqual(inv["total"], 100.0)
 ```
 
 ## Verification
-- [ ] Fix deployed — monitor order loss rate (should drop to 0%)
-- [ ] Regression test: kill a worker mid-processing, confirm order requeued
-- [ ] Add metric: `orders.acked_before_processed` (should always be 0)
-- [ ] Check dead-letter queue — orders that were already lost before fix may be there
+- [x] Original reproduction passes — `python -m unittest test_billing` → `Ran 3 tests ... OK`
+- [x] Regression test fails on old code, passes on new — `python -m unittest test_billing.BillingTest.test_promo_does_not_leak_into_next_invoice`: old code → `AssertionError: Lists differ: [0.1] != []`, `FAILED (failures=1)`; new code → `OK`
+- [x] Surrounding suite passes — same command as the first item (the module is the whole suite provided)
+- [ ] Same pattern searched — in the files provided only billing.py:1 matches; run across the repo:
+      `grep -rnE "def .*=[[:space:]]*(\[\]|\{\}|set\(\)|list\(\)|dict\(\))" --include='*.py' .`
+      The grep only matches single-line signatures; for multi-line signatures and other mutable defaults rely on
+      the linter rules: pylint W0102 (dangerous-default-value) and ruff/flake8-bugbear B006.

@@ -1,231 +1,174 @@
 ---
 name: dotnet-code-review
-description: Multi-dimensional code review for .NET / C# at Senior Engineer level — classify blast radius (CRITICAL/HIGH/MEDIUM/LOW), scan 5 dimensions (correctness, security, performance, maintainability, testability), detect LLM slop (disabled tests, suppressed warnings, empty catches, new TODO/HACK), check project convention, output a severity-tagged report (BLOCKER/MAJOR/MINOR/NIT) with concrete fix suggestions. Use when the code under review is C#, .NET, or ASP.NET — a class, file, diff, PR, or module — including when the user pastes a C# snippet and asks for feedback, issues, or improvements without saying "review". For any other language use `code-review`; for merge-readiness on a PR use `pr-review`. Does NOT modify code — for actual rewrites use `dotnet-code-refactor`.
+description: Use when reviewing C#, .NET, or ASP.NET Core code — a class, file, diff, or module — or when the user pastes C# and asks for feedback, issues, or improvements without saying "review". Checks .NET slop (skipped tests, #pragma/NoWarn, `!` abuse, swallowed exceptions) and async, DI, EF Core, disposal, ASP.NET Core security, and logging pitfalls; reports BLOCKER/MAJOR/MINOR/NIT findings with fixes. Read-only. Not for other languages (use `code-review`), PR merge-readiness (use `pr-review`), scored multi-dimension audits (use `code-audit`), or applying fixes (use `dotnet-code-refactor`).
 ---
 
-# Code Review (Multi-dimensional review at Senior Engineer level)
+# .NET Code Review
 
-When this skill activates, act as a **Senior Software Engineer** reviewing code for a teammate. Goal: find real problems, classify them by severity, and propose concrete fixes — **do not modify code yourself** (that is the job of the `dotnet-code-refactor` skill).
+Review C#/.NET code the way a senior .NET engineer reviews a teammate's change: find real defects, rank them, propose concrete fixes. **Do not modify code** — if the user wants fixes applied, hand off to `dotnet-code-refactor`.
 
-## Core principles (read before reviewing)
+## Principles
 
-1. **Scale review effort to blast radius, not lines of code.** A 50-line middleware change is more dangerous than a 500-line new endpoint. Don't spend 20 minutes reviewing a rename PR — that's Find & Replace + tests. Spend 30 minutes on a PR that touches auth.
-2. **Find real problems, not style issues.** Formatting and minor naming → leave it to the formatter/linter. Review focuses on correctness, security, blast radius. Mention style only briefly as `NIT`.
-3. **Retrieval-led, not pretrain-led.** Before saying "this code is wrong because of pattern X", **read neighboring files** and learn what pattern the project actually uses. Project convention beats general best practice. If unsure, ask the user instead of imposing.
-4. **Don't modify code — only flag problems and suggest fixes.** If the user wants to apply the fixes, recommend switching to the `dotnet-code-refactor` skill.
-5. **Every finding must have a "why" and a "how to fix".** Don't say "this is bad" and walk away. State why it's dangerous and how to fix it concretely (snippets, not full rewrites).
+1. **Effort follows blast radius, not line count.** A 20-line change to auth middleware deserves more scrutiny than a 500-line new read-only endpoint.
+2. **Project convention beats general advice.** Read 2–3 neighboring files before calling something wrong. If the codebase uses repositories over `DbContext`, don't tell new code to drop them.
+3. **Evidence or it isn't a finding.** Every finding cites `file:line`, the concrete failure (input → wrong result/crash/leak), and a fix snippet. If you can't point to it, don't claim it; ask instead.
+4. **Don't guess intent.** If code references types you can't see or its purpose is unclear, ask the user (use AskUserQuestion if available, otherwise ask in plain text).
 
-## Workflow (5 steps, in order)
+## Severity (canonical)
 
-### Step 1: Understand context and classify Blast Radius
+- **🔴 BLOCKER** — security hole, data loss/corruption, crash on reachable input, or broken contract. Must fix before merge.
+- **🟠 MAJOR** — real bug, missing validation at a trust boundary, N+1 on a real path, or a design flaw that will bite soon. Fix before merge.
+- **🟡 MINOR** — maintainability, clarity, or robustness issue worth fixing; may go to a tracked follow-up.
+- **💭 NIT** — style/taste; one line, never dwell.
 
-Before reviewing a single line:
+Uncertain items go under **Questions**, not a severity.
 
-1. **Read the supplied code/diff carefully.** If the user gives a single file → read it. If a diff/PR → read both the change and enough surrounding source (5–10 lines before/after).
-2. **State "what this code does"** in 1–2 sentences before reviewing. If you can't articulate intent → ask the user first, don't guess. Examples:
-   - "This validates the email then sends an OTP over SMTP, correct?"
-   - "Is this change related to PR #123 about rate limiting?"
-3. **Classify Blast Radius** with the table below — that decides how much effort to invest:
+## Workflow
 
-| Blast Radius | Signals | Effort | Examples |
-|---|---|---|---|
-| **CRITICAL** | Middleware, auth/authz, DB schema/migration, shared kernel, payment, CI/CD, infra | 30+ min, deep dive | Changing JWT validation, modifying a `users` table migration, touching the pipeline |
-| **HIGH** | Public API surface, message consumer, EF config, cross-module contract | 15–30 min | Adding a new POST endpoint, changing an event schema, modifying a core repository |
-| **MEDIUM** | New feature inside an existing module (following an existing pattern), internal service, new tests | 5–15 min | Adding `GetOrderByIdHandler` matching the existing handler pattern |
-| **LOW** | Docs, formatting, internal variable rename, added logging, typo fix | Glance, auto-approve | Renaming `usr` → `user` inside one private method |
+### Step 1 — Context and blast radius
 
-If the user hasn't clarified → state the blast radius you inferred at the top of the report and ask for confirmation.
+State in 1–2 sentences what the code does (confirm with the user if unsure), then classify:
 
-### Step 2: Quick Scan — detect LLM slop & quick wins
-
-Before going deep, scan for the patterns below (this is "AI cheating" — code that runs but hides problems). These are the highest-priority signals to flag:
-
-**Test slop:**
-- Tests disabled without a documented reason: `[Fact(Skip="flaky")]`, `[Ignore]`, `xit(...)`, `@Disabled`, `.skip()` in jest, `pytest.skip(...)`, `t.Skip()`
-- Empty or always-true assertions: `Assert.True(true)`, `expect(true).toBe(true)`, `assert 1 == 1`
-- Tests commented out
-- New tests that don't actually test anything (call the function but assert nothing about the result)
-
-**Unjustified warning/error suppression:**
-- `#pragma warning disable` in C# without an explanatory comment
-- `// eslint-disable-next-line` without a reason
-- `# type: ignore`, `# noqa` without a specific rule
-- `@ts-ignore` (always prefer `@ts-expect-error` + comment)
-- `@SuppressWarnings("all")` in Java
-- Try/catch that catches `Exception` then swallows it (empty catch, or only logs and returns `null/false`)
-
-**Logic shortcuts:**
-- Hardcoded credentials, API keys, or secrets in code
-- New `TODO`, `FIXME`, `HACK`, `XXX` markers (especially if the PR claims to be "done")
-- Magic numbers without a named constant
-- Duplicated copy-pasted code in 2–3 places instead of being extracted
-- Function names like `temp`, `tmp`, `test123`, `asdf`, `helper` that don't say what they do
-- `if (true)` / `if (false)` / dead branches
-- Comments like "fixed bug" with no explanation of the bug
-- Ignored return values (calling a function and not using its result, especially `Task`/`Promise`/`Future` not awaited)
-
-**Each detected pattern → flag immediately as MAJOR or BLOCKER** depending on context.
-
-### Step 3: Multi-dimensional Review (5 dimensions)
-
-Walk through each dimension below. Do NOT skip any dimension even if the code looks simple. For each dimension, note any problems found; if everything is fine, briefly write "OK" so the user knows you checked.
-
-#### 3.1 Correctness (logical right/wrong)
-- Edge cases: are null/undefined/empty/zero/negative inputs handled?
-- Off-by-one errors in loops, slicing, pagination
-- Race conditions: shared state without locks/atomics, async not awaited properly
-- Resource leaks: file/connection/stream not closed, `IDisposable` not disposed, missing `using`
-- Exception handling: catch too broad, catch then rethrow losing stack trace, catch then ignore
-- Concurrent modification (mutating a collection while iterating it)
-- Arithmetic: integer overflow, division by zero, floating-point `==`
-- Time/date: using `DateTime.Now`/`new Date()` instead of an injected clock (hard to test, timezone bugs)
-- String comparison: case-sensitivity, locale, Unicode normalization
-
-#### 3.2 Security
-- SQL injection: string concatenation in queries instead of parameterized
-- XSS: user data rendered straight into HTML without escaping
-- Path traversal: file path from user input without validation (`../../etc/passwd`)
-- Command injection: `exec`/`shell` with user input
-- Secret leakage: logging password/token/PII, or committing `.env` or keys
-- Auth/authz: permission check in the right place, missing checks on new endpoints
-- CSRF: form POST without a token
-- Mass assignment / over-posting (binding properties from request body without filtering)
-- Dependencies with known CVEs (outdated library versions)
-- HTTPS: hardcoded `http://`, certificate validation disabled
-- Crypto: MD5/SHA1 for passwords, non-crypto `Random` for tokens, ECB mode
-
-#### 3.3 Performance
-- N+1 queries (calling the DB inside a loop)
-- Loading an entire table into memory then filtering in the app (`.ToList().Where(...)` in C#, `for x in queryset: if ...` in Python)
-- Missing indexes on frequently queried columns
-- Excess allocations on the hot path (string concat in a loop instead of `StringBuilder`/`join`)
-- Sync I/O inside async context (blocking the thread pool)
-- Sequential `await` in a loop when work could be parallel (`Promise.all` / `Task.WhenAll`)
-- Cache stampede: many concurrent requests recomputing the same cache-miss value
-- Pagination without a limit, potentially returning a million rows
-- Wrong data structure (List when a HashSet is needed for membership checks)
-- Recomputing each call instead of memoizing an invariant value
-
-#### 3.4 Maintainability
-- Functions too long (>50 lines) or with high cyclomatic complexity (deeply nested ifs)
-- Variable/function names that don't convey intent (`data`, `info`, `process`, `handle`)
-- Comment drift (comment says A, code does B) — always trust the code and flag the stale comment
-- Comments that state the obvious (`// increment i by 1` over `i++`) — noise
-- Magic numbers/strings without a named constant
-- High coupling: module A reaching into module B's internals
-- Violating project conventions (see Step 4)
-- "Guessing the future" — generic abstractions for a single use case (YAGNI)
-- Deep inheritance where composition would be simpler
-- Dead code, unused imports, unused parameters
-
-#### 3.5 Testability
-- Hard dependencies on singletons/statics/time/random/IO → cannot be injected
-- Private methods containing complex logic that can't be tested through the public API
-- Newly added tests covering the new branch? (happy + error + edge cases)
-- Tests depending on other tests (order-dependent), missing setup/teardown
-- Over-mocking → tests only verify mocks, not real behavior
-- Integration tests using in-memory fakes instead of a container/real DB (tests don't catch real bugs)
-- Vague assertions (`Assert.NotNull(result)` without checking the value)
-
-### Step 4: Convention compliance check
-
-Before concluding, compare the code with the project's conventions:
-
-1. **Read 2–3 similar files in the same module/folder** to derive the current patterns (naming, file structure, error-handling style, return-type conventions…).
-2. **Compare the reviewed code with those patterns.** Inconsistency → flag (MINOR usually, MAJOR if it violates a core codebase pattern).
-3. **Project convention beats general best practice.** If the codebase uses the Repository pattern, don't tell new code to drop Repository just because "Microsoft recommends using DbContext directly". Mention it as a separate suggestion if relevant.
-4. If the user hasn't provided enough context (no neighboring files visible) → state clearly in the report: "No project context available, reviewing against general best practice only."
-
-### Step 5: Output the Review Report in the standard format
-
-Output the review in the template below. **Do not add empty sympathies like "great job!" or "awesome code!"** — review is serious, get to the point.
-
-#### Finding severity
-| Severity | Meaning | Examples |
+| Blast radius | Signals | Depth |
 |---|---|---|
-| **BLOCKER** | Cannot be merged; will break prod or leak data | SQL injection, auth bypass, race condition on payment, secret committed to git |
-| **MAJOR** | Should be fixed before merge; wrong logic or heavy tech debt | N+1 on a hot endpoint, exception swallowed, test disabled without reason, missing input validation |
-| **MINOR** | Can be fixed in a follow-up PR; convention break or moderate smell | Function too long, vague variable name, missing test for an edge case, stale comment |
-| **NIT** | Optional, mostly style/preference | Variable could be shorter, import order, blank lines |
-| **QUESTION** | Unsure — needs author clarification | "Why this approach instead of X?", "Any reason not to await here?" |
+| **CRITICAL** | Auth/authz, middleware pipeline, `Program.cs` DI/config, EF migrations/model config, payments, shared kernel | Every line; trace callers |
+| **HIGH** | Public API contracts, message consumers, background services, repositories used widely | Full catalogue; callers of changed signatures |
+| **MEDIUM** | New feature following an existing pattern, internal service, tests | Standard pass |
+| **LOW** | Renames, docs, logging text, formatting | Glance + slop scan |
 
-#### Report template (REQUIRED format)
+With no surrounding code visible, say so: "No project context — reviewing against general .NET practice."
 
-```markdown
-# Code Review — [file / PR / feature name]
+### Step 2 — Slop scan (cheap, always run)
 
-**Blast Radius:** [CRITICAL / HIGH / MEDIUM / LOW]
-**Total findings:** [N] (Blocker: x, Major: y, Minor: z, Nit: w, Question: v)
-**Verdict:** [REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE / NEEDS DISCUSSION]
+Code that compiles but hides problems. Don't repeat what analyzers already report — flag the change that *suppresses* them. Severity = what it hides (a skipped test covering the changed path is MAJOR; a stray TODO is MINOR).
+
+- **Disabled or hollow tests:** `[Fact(Skip = "...")]`, `[Theory(Skip = ...)]`, MSTest `[Ignore]`, NUnit `[Ignore("...")]`/`[Explicit]`, commented-out tests, `Assert.True(true)`, tests with no assertion, asserting only `Assert.NotNull(result)`.
+- **Suppressed diagnostics:** `#pragma warning disable` without a matching `restore` or a reason; new `<NoWarn>` entries in `.csproj`/`Directory.Build.props`; `[SuppressMessage]` without `Justification`; `#nullable disable` or `<Nullable>disable</Nullable>` added; `<TreatWarningsAsErrors>` removed.
+- **Null-forgiving abuse:** `!` used to silence a value that really can be null (`user!.Email` after a `FirstOrDefault`). `= null!;` on EF entity/DTO properties is an accepted idiom — prefer `required` (C# 11+) for new DTOs, but don't flag the idiom itself.
+- **Swallowed failures:** empty `catch { }`; `catch (Exception) { return null; }` / `return false;`; logging then continuing as if the operation succeeded; `_ = SomeAsync();` discarding a task whose failure matters.
+- **Shortcuts:** new `TODO`/`FIXME`/`HACK` in code claimed "done"; `.Result` added to make a method synchronous; secrets in `appsettings*.json` or code (use user-secrets locally, environment/Key Vault in deployed envs); copy-pasted blocks.
+
+### Step 3 — .NET pitfall catalogue
+
+Walk every section; write "OK" for sections checked with no findings. Typical severity in brackets — adjust to context.
+
+**Async**
+- `async void` outside event handlers — exceptions can't be caught by the caller and typically crash the process. [MAJOR]
+- `.Result`, `.Wait()`, `.GetAwaiter().GetResult()` on incomplete tasks — deadlocks where a `SynchronizationContext` exists (WPF/WinForms/legacy ASP.NET); in ASP.NET Core, thread-pool starvation under load. [MAJOR]
+- `CancellationToken` accepted but not passed on (to EF `ToListAsync(ct)`, `HttpClient`, `Task.Delay`), or not accepted on request paths. Controller/minimal-API `CancellationToken` parameters bind to `HttpContext.RequestAborted`. [MINOR; MAJOR on long-running work]
+- `ConfigureAwait(false)`: expected in general-purpose **library** code; unnecessary in ASP.NET Core app code (no `SynchronizationContext`) — don't flag its absence there.
+- Sequential `await` in a loop over independent I/O → `Task.WhenAll` (bounded, e.g. `Parallel.ForEachAsync` with `MaxDegreeOfParallelism`). Never `WhenAll` over the same `DbContext`.
+- `await` inside `lock` doesn't compile; replacement `SemaphoreSlim` must be released in `finally`.
+- Fire-and-forget `Task.Run` from a request that captures scoped services (`DbContext`) — they're disposed when the request ends. Use a queued `BackgroundService` that creates its own scope. [MAJOR]
+
+**Dependency injection and lifetimes**
+- Captive dependency: singleton depending on scoped/transient-with-state (e.g. singleton holding a `DbContext` or a typed `HttpClient`). Scope validation catches singleton→scoped only in Development. [MAJOR]
+- `DbContext` is not thread-safe and is scoped by default. In singletons/`BackgroundService` use `IDbContextFactory<T>` or `IServiceScopeFactory.CreateScope()`. [MAJOR]
+- `BuildServiceProvider()` called inside `ConfigureServices`/`Program.cs` — creates a second container with duplicate singletons. [MAJOR]
+
+**HttpClient**
+- `new HttpClient()` per call → socket exhaustion; a single long-lived static instance → stale DNS unless `SocketsHttpHandler.PooledConnectionLifetime` is set. Prefer `IHttpClientFactory` (named/typed clients). [MAJOR]
+- No timeout/resilience policy on outbound calls where the project uses one elsewhere (e.g. `AddStandardResilienceHandler`). Follow project convention.
+
+**EF Core**
+- N+1: query or lazy-loaded navigation inside a loop → `Include` or a `Select` projection. [MAJOR on real paths]
+- `ToList()`/`AsEnumerable()` before `Where`/`Select` → the filter runs in memory after loading every row. [MAJOR]
+- EF Core 3.0+ throws on untranslatable expressions except in the final `Select`; a method call there runs client-side — fine for formatting, wrong if it drags whole entities over the wire.
+- Read-only queries tracked by default → `AsNoTracking()` (or project to a DTO). [MINOR]
+- `SaveChanges()` inside a loop → one round trip per item; call once after the loop, or use `ExecuteUpdateAsync`/`ExecuteDeleteAsync` (EF Core 7+) for set-based changes. [MAJOR on large sets]
+- Multiple collection `Include`s → cartesian explosion; consider `AsSplitQuery()`.
+- New filter/sort/join columns without `HasIndex` in model config or a migration. [MAJOR on large tables]
+- Unbounded queries (no `Take`/paging) on user-facing lists.
+- Migration changes: review generated SQL (`dotnet ef migrations script`) for drops, renames emitted as drop+add, and locking on large tables. [CRITICAL radius]
+
+**Disposal**
+- `IDisposable` created and not disposed → `using` declaration; `IAsyncDisposable` (`DbContext`, streams, `Utf8JsonWriter`…) → `await using`. [MAJOR for connections/streams]
+- Disposing something the DI container owns (injected services). [MAJOR]
+
+**Nullability and exceptions**
+- Nullable reference types off in new projects, or new warnings (CS86xx) ignored. [MINOR]
+- `throw ex;` resets the stack trace → `throw;`, or wrap with `new XException("context", ex)`. [MINOR; MAJOR if it hides a production bug's origin]
+- Catching `OperationCanceledException` as an error (logs an error and records a 500 for a normal client disconnect).
+
+**ASP.NET Core**
+- Authorization: new endpoint without `[Authorize]`/`RequireAuthorization()` where the project has no fallback policy; stray `[AllowAnonymous]`; checks that the user is authenticated but not that they **own** the resource (IDOR). [BLOCKER]
+- Over-posting: binding EF entities directly from the request body → bind an input DTO and map explicitly. [MAJOR; BLOCKER if it lets users set roles/prices/owner]
+- Validation: `[ApiController]` returns a 400 `ValidationProblemDetails` automatically; minimal APIs don't validate DataAnnotations unless the project opts in (`AddValidation()` in .NET 10+, FluentValidation, or an endpoint filter). `[ApiController]` returns 400 even for semantically invalid input: follow the project's existing 400/422 convention; if there is none, raise it as a Question, not a finding.
+- Antiforgery: cookie-authenticated form posts need antiforgery (Razor Pages validate automatically; MVC needs `[ValidateAntiForgeryToken]` or the auto-validate filter; minimal-API form binding needs `AddAntiforgery()` + `UseAntiforgery()`). Pure bearer-token APIs don't.
+- Errors: stack traces or `ex.Message` returned to clients in production → `AddProblemDetails()` + `UseExceptionHandler`. [MAJOR]
+- Other injection points: `FromSqlRaw`/`ExecuteSqlRaw` with interpolated or concatenated input → `FromSql`/`FromSqlInterpolated` or parameters [BLOCKER]; `Path.Combine(root, userInput)` — a rooted `userInput` discards `root`, and `..` escapes it; validate the resolved full path stays under `root` [BLOCKER]; `System.Random` for tokens → `RandomNumberGenerator` [BLOCKER]; hand-rolled password hashing → `PasswordHasher<T>` or a vetted KDF.
+
+**Logging**
+- String interpolation in log calls (`_logger.LogInformation($"Order {id}")`) loses structured properties and formats even when the level is off → message template `LogInformation("Order {OrderId} placed", id)` (analyzer CA2254). Hot paths: `[LoggerMessage]` source generator. [MINOR]
+- Passwords, tokens, connection strings, or PII in log arguments or logged request bodies. [BLOCKER for secrets]
+- Exception passed as a template argument instead of the `exception` parameter (`LogError(ex, "...")`).
+
+**General correctness and testability**
+- `DateTime.Now` in logic → `DateTime.UtcNow` or injected `TimeProvider` (.NET 8+) so it's testable.
+- String comparison without `StringComparison.Ordinal`/`OrdinalIgnoreCase`; `ToLower()` equality.
+- Non-thread-safe collections (`Dictionary`, `List`) mutated in singletons → `ConcurrentDictionary` or a lock.
+- `double`/`float` for money → `decimal`.
+- Tests: new branches covered (happy, error, edge)? Over-mocked `DbContext` or EF InMemory provider for query tests misses real SQL translation — prefer SQLite in-memory or a Testcontainers database when the project does. Tests sharing state across `[Fact]`s.
+
+### Step 4 — Convention check
+
+Compare with 2–3 sibling files: naming, layering (controller → service → repository or handlers), result/error style, DI registration location, async suffixes, test naming. A deviation from a core codebase pattern is MAJOR; a local inconsistency is MINOR. When general .NET advice conflicts with the project's pattern, raise it as a Question or a follow-up, not a finding.
+
+If you can run commands, `dotnet build` (look for new warnings), `dotnet test`, and `dotnet list package --vulnerable` give evidence; mark findings you reproduced `[verified]`.
+
+### Step 5 — Report
+
+No filler praise; genuine strengths go in "Checked OK".
+
+````markdown
+# .NET Code Review — [file / feature]
+
+**Blast radius:** CRITICAL | HIGH | MEDIUM | LOW
+**Findings:** Blocker x · Major y · Minor z · Nit w
+**Verdict:** REQUEST CHANGES | APPROVE WITH COMMENTS | APPROVE | NEEDS DISCUSSION
 
 ## Summary
-[2–4 sentences: what this code does, the main problem (if any), and decision rationale]
+[2–4 sentences: what the code does, the main risk, why this verdict]
 
 ## Findings
-
 ### 🔴 BLOCKER
-
 #### [B-1] [Short title]
-**File:** `path/to/file.ext:L42-L48`
-**Problem:** [Short, concrete description, not generic]
-**Why it's dangerous:** [Real-world consequence if deployed as-is]
-**Suggested fix:**
-```[lang]
-// instead of
-[bad snippet]
-
-// use
-[good snippet]
+**Location:** `path/File.cs:42-48`
+**Problem:** [concrete defect]
+**Impact:** [what happens in production]
+**Fix:**
+```csharp
+// before
+...
+// after
+...
 ```
-
 ### 🟠 MAJOR
-[Same format as Blocker]
-
+[same fields, M-1…]
 ### 🟡 MINOR
-[Can be condensed if several findings share a category]
+[same fields; may group findings sharing a cause]
+### 💭 NIT
+- [one line each]
 
-### ⚪ NIT
-[Short bullets, no detailed fix snippet needed]
-
-### ❓ QUESTION
-[Questions for the author to answer]
+## Questions
+- [things only the author can answer]
 
 ## Checked OK
-- [Dimension X]: no issues found
-- [Dimension Y]: ...
+- [section]: [what was verified]
 
-## Suggested follow-up (out of this PR's scope)
-[If you see tech debt that doesn't belong in this PR → short note so the user can track it separately]
-```
+## Follow-up (out of scope)
+- [tech debt noticed but unrelated to this change]
+````
 
-#### How to decide the Verdict
+Omit empty severity sections. For a short snippet outside a PR, keep the same headings but drop Verdict.
 
-- **REQUEST CHANGES**: ≥1 BLOCKER or ≥3 MAJOR
-- **APPROVE WITH COMMENTS**: MAJOR/MINOR present but no BLOCKER; mergeable but should be fixed
-- **APPROVE**: only NIT/QUESTION, no blockers, ship it
-- **NEEDS DISCUSSION**: a larger design issue needs discussion before line-level fixes (e.g., the approach itself should change)
+**Verdict rules** (follow from the severity definitions):
+- **REQUEST CHANGES** — any BLOCKER or MAJOR.
+- **APPROVE WITH COMMENTS** — MINOR findings only (plus NITs/questions).
+- **APPROVE** — NITs or nothing.
+- **NEEDS DISCUSSION** — the approach itself is wrong or unclear; line-level findings would be premature.
 
-## Anti-patterns when reviewing (DO NOT do these)
+## Special situations
 
-❌ **Don't modify code.** This skill only reviews. If the user wants to apply fixes → suggest switching to `dotnet-code-refactor`.
-
-❌ **Don't over-review.** A 1-line comment fix doesn't need a 5-dimension review. Match effort to blast radius.
-
-❌ **Don't invent conventions.** If you haven't read enough neighboring files to know the convention → write "no project context" instead of imposing your preferred pattern.
-
-❌ **Don't repeat the linter.** The compiler/linter already reports those → don't duplicate them. Focus on things tools can't catch (logic, security, design).
-
-❌ **Don't review with emojis/feelings instead of reasoning.** "🤔 hmm" is not a review.
-
-❌ **Don't assume missing context.** If code references symbols you can't see → ask instead of guessing.
-
-❌ **Don't review prototype/spike code like production code.** Ask first: "Is this production-bound or an experiment?" Spike code only needs correctness review, not testability/maintainability.
-
-## Handling special situations
-
-- **User pastes a single function with no context:** review it standalone + state clearly "no caller visible, cannot fully assess blast radius and side effects". Ask for context if needed.
-- **User pastes a huge diff (>500 lines):** don't try to review everything at once. Say "large diff, I'll review by group" → split by file/module → run the review in 2–3 passes.
-- **User asks "is this code OK?" about a short snippet:** still follow the full workflow, just compress the report (skip Verdict if it's not a PR).
-- **User asks to check only one dimension (e.g., "security only"):** OK, focus on that dimension, but still quick-scan for slop (Step 2) since it's cheap.
-- **Code has `//AI-generated` comments or LLM signatures:** scan Step 2 (slop scan) harder — it's a high-risk zone.
-- **User wants to apply fixes after the review:** "Review complete. To apply the fixes, let's switch to the `dotnet-code-refactor` skill — it will do one at a time, with test safety nets before each change."
+- **Large diff (> ~500 lines):** say so, review by project/folder in passes, CRITICAL-radius files first.
+- **Single dimension requested ("security only"):** do that, but still run the Step 2 slop scan.

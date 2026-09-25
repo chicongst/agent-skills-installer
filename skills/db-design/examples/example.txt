@@ -1,181 +1,305 @@
 # Example: /db-design
 
 ## User Input
-Design the database schema for a SaaS project management tool. Users belong to
-organizations. Organizations have projects. Projects have tasks. Tasks can be
-assigned to users, have comments, attachments, and labels. Need to support
-searching tasks by label, assignee, and status. Multi-tenant — orgs must be
-fully isolated.
+Design the database schema for a SaaS project management tool on PostgreSQL 17.
+Users belong to organizations. Organizations have projects. Projects have tasks.
+Tasks can be assigned to users and tagged with labels. Need to search tasks by
+label, assignee, and status. Multi-tenant — orgs must be fully isolated.
 
 ## Skill Output
 
 # Database Design: SaaS Project Management
 
+**Engine**: PostgreSQL 17 · **Scope**: new schema
+
+## Assumptions
+- A user can belong to several organizations; a role is per organization.
+- Labels are shared by all projects of an organization (the input does not say project-scoped).
+- Task statuses are `todo`, `in_progress`, `in_review`, `done`, `cancelled`; "open" means the first three.
+- Lists are newest-first, 50 per page, keyset-paginated.
+- Record IDs are exposed in URLs and APIs.
+- The application sets the tenant per transaction (`SET LOCAL app.org_id = '<org uuid>'`) and connects as role `app`, which does not own the tables.
+- Account-level writes (sign-up, profile edits, creating organizations) run under a separate privileged role that is not designed here; `app` only reads `users` and `organizations`.
+- No volumes were given, so no partitioning; indexes were checked on synthetic data (see each **Plan** line).
+
 ## Domain Model
-- Organization 1:N Users (membership via org_members)
-- Organization 1:N Projects
-- Project 1:N Tasks
-- Task N:M Users (via task_assignees)
-- Task 1:N Comments
-- Task 1:N Attachments
-- Task N:M Labels (via task_labels)
-- Label belongs to Project (labels are project-scoped)
+- Organization 1:N Project, Organization 1:N Label — owned by the org, deleted with it.
+- User N:M Organization via `org_members` (role per org); a user row is global but visible only to orgs the user belongs to.
+- Project 1:N Task — owned by the project.
+- Task N:M User via `task_assignees` — assignee must be a member of the task's org.
+- Task N:M Label via `task_labels` — label must belong to the task's org.
 
 ## Schema
+### organizations
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | uuid | PK, DEFAULT gen_random_uuid() | Tenant key; not guessable in URLs. RLS: only the current org is visible |
+| name | text | NOT NULL, CHECK length 1–200 | |
+| created_at | timestamptz | NOT NULL, DEFAULT now() | |
 
+### users
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | uuid | PK, DEFAULT gen_random_uuid() | |
+| email | text | NOT NULL | Unique case-insensitively (see below) |
+| display_name | text | NOT NULL, CHECK length 1–100 | |
+| created_at | timestamptz | NOT NULL, DEFAULT now() | |
+
+**Table constraints**: unique index `users_email_lower_key` on `lower(email)`. RLS: readable only when the user is a member of the current org; login goes through `app_login_lookup(email)`.
+
+### org_members
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| org_id | uuid | NOT NULL, FK → organizations ON DELETE CASCADE | |
+| user_id | uuid | NOT NULL, FK → users ON DELETE CASCADE | |
+| role | text | NOT NULL, DEFAULT 'member', CHECK IN (owner, admin, member, viewer) | |
+| joined_at | timestamptz | NOT NULL, DEFAULT now() | |
+
+**Table constraints**: PK `(org_id, user_id)` — also the target of the assignee FK.
+
+### projects
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | uuid | PK, DEFAULT gen_random_uuid() | |
+| org_id | uuid | NOT NULL, FK → organizations ON DELETE CASCADE | |
+| name | text | NOT NULL, CHECK length 1–200 | |
+| created_at | timestamptz | NOT NULL, DEFAULT now() | |
+
+**Table constraints**: UNIQUE `(org_id, id)` (composite-FK target); UNIQUE `(org_id, name)`.
+
+### tasks
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | uuid | PK, DEFAULT gen_random_uuid() | |
+| org_id | uuid | NOT NULL | Part of the composite FK below — cannot disagree with the project's org |
+| project_id | uuid | NOT NULL | |
+| title | text | NOT NULL, CHECK length 1–500 | |
+| description | text | | Optional |
+| status | text | NOT NULL, DEFAULT 'todo', CHECK IN (todo, in_progress, in_review, done, cancelled) | |
+| created_by | uuid | NOT NULL, FK → users (NO ACTION) | Creator is an independent entity — no cascade |
+| created_at | timestamptz | NOT NULL, DEFAULT now() | Sort key for lists |
+
+**Table constraints**: UNIQUE `(org_id, id)`; FK `(org_id, project_id)` → `projects (org_id, id)` ON DELETE CASCADE.
+
+### labels
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| id | uuid | PK, DEFAULT gen_random_uuid() | |
+| org_id | uuid | NOT NULL, FK → organizations ON DELETE CASCADE | |
+| name | text | NOT NULL, CHECK length 1–50 | |
+
+**Table constraints**: UNIQUE `(org_id, id)`; UNIQUE `(org_id, name)`.
+
+### task_assignees
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| org_id | uuid | NOT NULL | Shared by both FKs — forces task and member into one org |
+| task_id | uuid | NOT NULL | |
+| user_id | uuid | NOT NULL | |
+| assigned_at | timestamptz | NOT NULL, DEFAULT now() | |
+
+**Table constraints**: PK `(task_id, user_id)`; FK `(org_id, task_id)` → `tasks (org_id, id)` ON DELETE CASCADE; FK `(org_id, user_id)` → `org_members (org_id, user_id)` ON DELETE CASCADE.
+
+### task_labels
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| org_id | uuid | NOT NULL | Shared by both FKs — forces task and label into one org |
+| task_id | uuid | NOT NULL | |
+| label_id | uuid | NOT NULL | |
+
+**Table constraints**: PK `(task_id, label_id)`; FK `(org_id, task_id)` → `tasks (org_id, id)` ON DELETE CASCADE; FK `(org_id, label_id)` → `labels (org_id, id)` ON DELETE CASCADE.
+
+## DDL
 ```sql
--- Multi-tenancy root
 CREATE TABLE organizations (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        VARCHAR(255) NOT NULL,
-    slug        VARCHAR(100) NOT NULL,
-    plan        VARCHAR(20) NOT NULL DEFAULT 'free'
-                    CHECK (plan IN ('free', 'pro', 'enterprise')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_org_slug UNIQUE (slug)
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Users (global, cross-org via memberships)
 CREATE TABLE users (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email        VARCHAR(255) NOT NULL,
-    display_name VARCHAR(100) NOT NULL,
-    avatar_url   TEXT,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_users_email UNIQUE (email)
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    email        text NOT NULL,
+    display_name text NOT NULL CHECK (char_length(display_name) BETWEEN 1 AND 100),
+    created_at   timestamptz NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX users_email_lower_key ON users (lower(email));
 
--- Org membership (role scoped to org)
 CREATE TABLE org_members (
-    org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role       VARCHAR(20) NOT NULL DEFAULT 'member'
-                   CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
-    joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    org_id    uuid NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id   uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role      text NOT NULL DEFAULT 'member'
+                  CHECK (role IN ('owner', 'admin', 'member', 'viewer')),
+    joined_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, user_id)
 );
+CREATE INDEX org_members_user_idx ON org_members (user_id);
 
 CREATE TABLE projects (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id      UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    name        VARCHAR(255) NOT NULL,
-    description TEXT,
-    status      VARCHAR(20) NOT NULL DEFAULT 'active'
-                    CHECK (status IN ('active', 'archived')),
-    created_by  UUID NOT NULL REFERENCES users(id),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_project_name_per_org UNIQUE (org_id, name)
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id     uuid NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    name       text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 200),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (org_id, id),
+    UNIQUE (org_id, name)
 );
 
 CREATE TABLE tasks (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id   UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    org_id       UUID NOT NULL REFERENCES organizations(id),  -- denormalized for query perf
-    title        VARCHAR(500) NOT NULL,
-    description  TEXT,
-    status       VARCHAR(20) NOT NULL DEFAULT 'todo'
-                     CHECK (status IN ('todo', 'in_progress', 'in_review', 'done', 'cancelled')),
-    priority     VARCHAR(10) NOT NULL DEFAULT 'medium'
-                     CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
-    due_date     DATE,
-    created_by   UUID NOT NULL REFERENCES users(id),
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id      uuid NOT NULL,
+    project_id  uuid NOT NULL,
+    title       text NOT NULL CHECK (char_length(title) BETWEEN 1 AND 500),
+    description text,
+    status      text NOT NULL DEFAULT 'todo'
+                    CHECK (status IN ('todo', 'in_progress', 'in_review', 'done', 'cancelled')),
+    created_by  uuid NOT NULL REFERENCES users (id),
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (org_id, id),
+    FOREIGN KEY (org_id, project_id) REFERENCES projects (org_id, id) ON DELETE CASCADE
 );
 
--- Task assignees (N:M)
-CREATE TABLE task_assignees (
-    task_id    UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (task_id, user_id)
-);
-
--- Labels are project-scoped
 CREATE TABLE labels (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name       VARCHAR(50) NOT NULL,
-    color      CHAR(7) NOT NULL DEFAULT '#6B7280',  -- hex color
-    CONSTRAINT uq_label_name_per_project UNIQUE (project_id, name)
+    id     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id uuid NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    name   text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 50),
+    UNIQUE (org_id, id),
+    UNIQUE (org_id, name)
+);
+
+CREATE TABLE task_assignees (
+    org_id      uuid NOT NULL,
+    task_id     uuid NOT NULL,
+    user_id     uuid NOT NULL,
+    assigned_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (task_id, user_id),
+    FOREIGN KEY (org_id, task_id) REFERENCES tasks (org_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id, user_id) REFERENCES org_members (org_id, user_id) ON DELETE CASCADE
 );
 
 CREATE TABLE task_labels (
-    task_id    UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    label_id   UUID NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
-    PRIMARY KEY (task_id, label_id)
+    org_id   uuid NOT NULL,
+    task_id  uuid NOT NULL,
+    label_id uuid NOT NULL,
+    PRIMARY KEY (task_id, label_id),
+    FOREIGN KEY (org_id, task_id)  REFERENCES tasks (org_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id, label_id) REFERENCES labels (org_id, id) ON DELETE CASCADE
 );
 
-CREATE TABLE comments (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id    UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    author_id  UUID NOT NULL REFERENCES users(id),
-    body       TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+CREATE INDEX tasks_project_status_created_idx
+    ON tasks (org_id, project_id, status, created_at, id);
+CREATE INDEX task_assignees_user_idx ON task_assignees (org_id, user_id, task_id);
+CREATE INDEX task_labels_label_idx   ON task_labels (org_id, label_id, task_id);
+CREATE INDEX tasks_created_by_idx    ON tasks (created_by);
 
-CREATE TABLE attachments (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id     UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    uploaded_by UUID NOT NULL REFERENCES users(id),
-    filename    VARCHAR(255) NOT NULL,
-    storage_key TEXT NOT NULL,          -- S3 key
-    size_bytes  INTEGER NOT NULL,
-    mime_type   VARCHAR(100) NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+CREATE FUNCTION app_current_org() RETURNS uuid
+    LANGUAGE sql STABLE
+    AS $$ SELECT NULLIF(current_setting('app.org_id', true), '')::uuid $$;
+
+ALTER TABLE organizations  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE org_members    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE labels         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task_assignees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task_labels    ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON organizations  USING (id = app_current_org());
+CREATE POLICY tenant_isolation ON org_members    USING (org_id = app_current_org());
+CREATE POLICY tenant_isolation ON projects       USING (org_id = app_current_org());
+CREATE POLICY tenant_isolation ON tasks          USING (org_id = app_current_org());
+CREATE POLICY tenant_isolation ON labels         USING (org_id = app_current_org());
+CREATE POLICY tenant_isolation ON task_assignees USING (org_id = app_current_org());
+CREATE POLICY tenant_isolation ON task_labels    USING (org_id = app_current_org());
+-- Users are global rows: visible only if they are members of the current org.
+CREATE POLICY same_org_members ON users FOR SELECT
+    USING (EXISTS (SELECT 1 FROM org_members m
+                   WHERE m.user_id = users.id AND m.org_id = app_current_org()));
+
+-- Login runs before a tenant is set: resolve one email to its memberships only.
+CREATE FUNCTION app_login_lookup(p_email text)
+    RETURNS TABLE (user_id uuid, org_id uuid, role text)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp
+    AS $$ SELECT u.id, m.org_id, m.role
+          FROM users u JOIN org_members m ON m.user_id = u.id
+          WHERE lower(u.email) = lower(p_email) $$;
+
+-- Tenant-scoped application role; it must not own the tables (owners bypass RLS).
+CREATE ROLE app LOGIN;  -- set the password out of band
+GRANT SELECT ON organizations, users TO app;
+GRANT SELECT, INSERT, UPDATE, DELETE
+    ON org_members, projects, tasks, labels, task_assignees, task_labels TO app;
+REVOKE EXECUTE ON FUNCTION app_login_lookup(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION app_login_lookup(text) TO app;
 ```
 
 ## Indexes
+PK and UNIQUE constraints above already create their indexes; `(org_id, id)` on projects and labels also serves their FK to `organizations`, and `tasks (org_id, id)` serves the junction-table FKs and the Q2/Q3 joins.
 
+| Index | Definition | Serves | Notes |
+|---|---|---|---|
+| tasks_project_status_created_idx | tasks (org_id, project_id, status, created_at, id) | Q1; FK `(org_id, project_id)` on project delete | Backward scan gives newest-first; no DESC needed |
+| task_assignees_user_idx | task_assignees (org_id, user_id, task_id) | Q2; FK to `org_members` on member removal | Index-only scan for the assignee side |
+| task_labels_label_idx | task_labels (org_id, label_id, task_id) | Q3; FK to `labels` on label delete | Index-only scan for the label side |
+| org_members_user_idx | org_members (user_id) | FK to `users` on user delete; "my orgs" lookup | PK leads with org_id, so it cannot seek on user_id |
+| tasks_created_by_idx | tasks (created_by) | FK to `users` on user delete | Pure write cost if users are never deleted — see Open Questions |
+
+## Query Patterns
+### Q1 — Project board: tasks in one status, newest first
 ```sql
--- Tenant isolation + task list queries
-CREATE INDEX idx_tasks_project_id       ON tasks(project_id);
-CREATE INDEX idx_tasks_org_id_status    ON tasks(org_id, status);
-CREATE INDEX idx_tasks_due_date         ON tasks(due_date) WHERE due_date IS NOT NULL;
-
--- Assignee filtering (very common query)
-CREATE INDEX idx_task_assignees_user_id ON task_assignees(user_id);
-
--- Label filtering
-CREATE INDEX idx_task_labels_label_id   ON task_labels(label_id);
-
--- Comments and attachments access
-CREATE INDEX idx_comments_task_id       ON comments(task_id);
-CREATE INDEX idx_attachments_task_id    ON attachments(task_id);
-
--- Org member lookup
-CREATE INDEX idx_org_members_user_id    ON org_members(user_id);
+SELECT t.id, t.title, t.status, t.created_at
+FROM tasks t
+WHERE t.org_id = $1 AND t.project_id = $2 AND t.status = $3
+  AND (t.created_at, t.id) < ($4, $5)   -- cursor from the last row; omit on page 1
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT 50;
 ```
+**Plan**: [verified — PostgreSQL 17.11, synthetic 300,000 tasks with one project holding 101,000] `Limit → Index Scan Backward using tasks_project_status_created_idx`, all four predicates in `Index Cond`, no Sort node; it stops after 50 rows. With RLS active as the app role and `org_id` omitted from the query, the policy predicate appears in the same `Index Cond`.
 
-## Key Query Patterns
-
+### Q2 — My open tasks in the current org
 ```sql
--- Tasks for a project, filtered by assignee and label
-SELECT DISTINCT t.* FROM tasks t
-JOIN task_assignees ta ON ta.task_id = t.id
-JOIN task_labels tl ON tl.task_id = t.id
-WHERE t.project_id = $1
-  AND ta.user_id = $2
-  AND tl.label_id = $3
-  AND t.status != 'cancelled'
-ORDER BY t.created_at DESC
-LIMIT 20;
-
--- All tasks assigned to a user across all their orgs
-SELECT t.* FROM tasks t
-JOIN task_assignees ta ON ta.task_id = t.id
-JOIN org_members om ON om.org_id = t.org_id AND om.user_id = ta.user_id
-WHERE ta.user_id = $1 AND t.status = 'in_progress';
+SELECT t.id, t.title, t.status, t.created_at
+FROM task_assignees ta
+JOIN tasks t ON t.org_id = ta.org_id AND t.id = ta.task_id
+WHERE ta.org_id = $1 AND ta.user_id = $2
+  AND t.status IN ('todo', 'in_progress', 'in_review')
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT 50;
 ```
+**Plan**: [verified — same data; 161–246 assignments per user] `Nested Loop` of `Index Only Scan Backward using task_assignees_user_idx` (Heap Fetches: 0) with an `Index Scan using tasks_org_id_id_key` (the unique `(org_id, id)` index) per assignment, then `Sort` of all of the user's matching tasks before `Limit`. The shape depends on cardinality: after giving one user 100,210 assignments, the planner switched to a `Parallel Seq Scan` of the org's tasks, sorted, probing `task_assignees_user_idx` per row. Re-check at real volumes — see Trade-offs.
 
-## Design Decisions
+### Q3 — Tasks with a label, filtered by status
+```sql
+SELECT t.id, t.title, t.status, t.created_at
+FROM task_labels tl
+JOIN tasks t ON t.org_id = tl.org_id AND t.id = tl.task_id
+WHERE tl.org_id = $1 AND tl.label_id = $2 AND t.status = $3
+ORDER BY t.created_at DESC, t.id DESC
+LIMIT 50;
+```
+**Plan**: [verified — same data; 337–457 tasks per label] `Nested Loop` of `Index Only Scan Backward using task_labels_label_idx` with an `Index Scan using tasks_org_id_id_key` per row and `status` as a Filter, then `Sort` before `Limit`. Same cardinality caveat as Q2 (not re-tested with a large label).
 
-**`org_id` denormalized onto `tasks`**: Avoids JOIN through projects every time we
-need tenant isolation. Small write overhead, large read benefit.
+## Data Integrity
+| Business rule | Enforced by |
+|---|---|
+| A task belongs to a project of its own org | FK `(org_id, project_id)` → `projects (org_id, id)` [verified: cross-org insert fails with an FK violation] |
+| Only members of the task's org can be assigned | FK `(org_id, user_id)` → `org_members`; removing a member removes their assignments (CASCADE) [verified: another org's user fails; removal cascades] |
+| A label on a task belongs to the task's org | FKs `(org_id, task_id)` and `(org_id, label_id)` share one `org_id` [verified: another org's label, or a mismatched `org_id`, fails] |
+| A task cannot be moved to another org while it has assignees or labels | Child FKs have no `ON UPDATE` action, so changing `tasks.org_id` is rejected [verified] |
+| A tenant sees and writes only its own rows | RLS policy `tenant_isolation` on `organizations` and the six tenant tables; unset tenant → zero rows (`app_current_org()` returns NULL) [verified as `app`; cross-org insert fails with "new row violates row-level security policy"] |
+| A tenant sees only users who are its members | RLS policy `same_org_members` on `users` (SELECT only; `app` has no write grant) [verified as `app` in org A: only org A's members are returned, unset tenant → 0 rows, `INSERT` → permission denied] |
+| Login reveals only the memberships of the email being logged in | `SECURITY DEFINER` function `app_login_lookup(email)`, `EXECUTE` revoked from PUBLIC [verified: returns both memberships of a user in two orgs, nothing else] |
+| No duplicate emails (case-insensitive), project names or label names per org | `users_email_lower_key`; UNIQUE `(org_id, name)` |
+| No duplicate assignment or labeling | PKs `(task_id, user_id)`, `(task_id, label_id)` |
+| Valid status / role values | CHECK constraints |
+| Deleting an org deletes all its data | ON DELETE CASCADE chain from `organizations` |
 
-**Labels are project-scoped, not org-scoped**: Teams in the same org may use
-different label systems per project. Org-wide labels can be added in v2 if needed.
+## Migration Strategy
+New schema with no existing data: one migration runs the DDL above in order (parents before children; RLS, role and grants last). `CREATE ROLE` is cluster-wide — in environments where `app` already exists, skip that line. No backfill or lock concerns. Later changes to these tables go through expand/contract — plan the rollout with `migration-safety`.
 
-**No soft deletes**: CASCADE DELETE used throughout. Audit log handled separately.
+## Trade-offs & Open Questions
+- **Composite FKs + RLS, both** — composite FKs stop cross-tenant links even from a buggy writer or superuser session; RLS stops cross-tenant reads when a query forgets `org_id`. Cost: an extra unique index `(org_id, id)` on projects, tasks and labels, and an `EXISTS` check on `org_members` for every `users` row read. Schema-per-tenant rejected: migrations and connection pools multiply by tenant count.
+- **No index on `status` alone** — five values, low selectivity; it is an equality column inside the Q1 index instead.
+- **uuid keys (v4)** — IDs are exposed in URLs (assumed) and must not be enumerable across tenants. Random inserts scatter the PK index; switch to UUIDv7 generated in the app if insert rate becomes a concern.
+- **Q2/Q3 sort after the join** — fine at the few hundred rows per assignee/label seen in the seed. If real counts are much larger and `EXPLAIN (ANALYZE)` shows the sort or a scan of the org's tasks dominating, copy `status` and `created_at` into the junction tables and index them — at the price of keeping the copies in sync.
+- **Login before a tenant is set** — RLS hides `users` and `org_members` at that point, so `app_login_lookup` (running as the table owner) returns one email's memberships. It trusts its caller: call it only from the authentication flow, and confirm that account writes live in a separate role.
+- **User deletion (e.g. GDPR erasure)** — `tasks.created_by` blocks deleting a user who created tasks. Should creators be anonymized (nullable `created_by`, `ON DELETE SET NULL`) instead? If users are never deleted, drop `tasks_created_by_idx`.

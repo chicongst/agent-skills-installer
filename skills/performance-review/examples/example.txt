@@ -2,9 +2,17 @@
 
 ## User Input
 Our product search endpoint is slow. GET /api/products/search?q=shoes&category=footwear
-is taking 3-8 seconds. This is our most-used endpoint (~50k requests/hour). Currently
-it queries a PostgreSQL table with 2 million product rows. Here's the query:
+is our most-used endpoint (~50k requests/hour). Target: p99 < 500 ms.
 
+Production APM, last 7 days: p50 640 ms, p95 2.1 s, p99 3.8 s, max 8.1 s. The DB span
+is ~90% of request time in the slowest traces. Latency varies by search term.
+
+PostgreSQL 17. products: 2.0M rows (70,303 in footwear). reviews(id, product_id, rating,
+created_at): 8.0M rows.
+Indexes: products(category_id), reviews(product_id), categories(slug) unique.
+Writes: ~3,000 new reviews/day; a nightly import updates ~50k product rows.
+
+Query (from ProductSearchRepository):
 ```sql
 SELECT p.*, c.name as category_name, AVG(r.rating) as avg_rating
 FROM products p
@@ -18,125 +26,150 @@ ORDER BY avg_rating DESC NULLS LAST
 LIMIT 20;
 ```
 
+On a staging restore of production data, we ran it 4 times: 697, 496, 441 and 552 ms.
+The plan for the 552 ms run:
+```
+ Limit  (cost=27131.97..27132.02 rows=20 width=228) (actual time=551.625..551.629 rows=20 loops=1)
+   Buffers: shared hit=194500
+   ->  Sort  (cost=27131.97..27133.87 rows=760 width=228) (actual time=551.622..551.625 rows=20 loops=1)
+         Sort Key: (avg(r.rating)) DESC NULLS LAST
+         Sort Method: top-N heapsort  Memory: 32kB
+         ->  GroupAggregate  (cost=27094.65..27111.75 rows=760 width=228) (actual time=528.787..547.971 rows=20155 loops=1)
+               Group Key: p.id, c.name
+               ->  Sort  (cost=27094.65..27096.55 rows=760 width=198) (actual time=528.769..532.752 rows=80918 loops=1)
+                     Sort Key: p.id, c.name
+                     Sort Method: quicksort  Memory: 14651kB
+                     ->  Nested Loop Left Join  (cost=111.91..27058.28 rows=760 width=198) (actual time=11.980..495.880 rows=80918 loops=1)
+                           ->  Nested Loop  (cost=111.47..25521.81 rows=190 width=196) (actual time=11.946..282.390 rows=20155 loops=1)
+                                 ->  Seq Scan on categories c  (cost=0.00..4.50 rows=1 width=16) (actual time=0.006..0.015 rows=1 loops=1)
+                                       Filter: (slug = 'footwear'::text)
+                                       Rows Removed by Filter: 199
+                                 ->  Bitmap Heap Scan on products p  (cost=111.47..25515.41 rows=190 width=184) (actual time=11.937..279.184 rows=20155 loops=1)
+                                       Recheck Cond: (category_id = c.id)
+                                       Filter: (active AND ((name ~~* '%shoes%'::text) OR (description ~~* '%shoes%'::text)))
+                                       Rows Removed by Filter: 50148
+                                       Heap Blocks: exact=53422
+                                       Buffers: shared hit=53479
+                                       ->  Bitmap Index Scan on products_category_id_idx  (cost=0.00..111.43 rows=10000 width=0) (actual time=5.897..5.897 rows=70303 loops=1)
+                                             Index Cond: (category_id = c.id)
+                           ->  Index Scan using reviews_product_id_idx on reviews r  (cost=0.43..8.04 rows=5 width=10) (actual time=0.004..0.010 rows=4 loops=20155)
+                                 Index Cond: (product_id = p.id)
+                                 Buffers: shared hit=141010
+ Planning Time: 1.013 ms
+ Execution Time: 552.536 ms
+```
+
 ## Skill Output
 
 # Performance Review: GET /api/products/search
 
-## Current State
-- **p99 latency**: 3-8 seconds (varies by search term)
-- **Traffic**: ~50k req/hour (~14 req/second)
-- **SLA target**: < 500ms at p99
-- **Status**: Violating SLA by 6-16x
+## Baseline
+- **Operation & rate**: product search, ~50k req/hour (~14 req/s on average; peak rate not given). This is the most-used endpoint.
+- **Latency**: production APM, 7 days: p50 640 ms / p95 2.1 s / p99 3.8 s (max 8.1 s).
+- **Target**: p99 < 500 ms (stated). Even today's p50 (640 ms) is above it.
+- **Environment**: the plan comes from a staging restore of production data, one term ('shoes'), and a warm cache (`Buffers: shared hit` only, no `read`). The 4 runs took 441–697 ms.
 
-## Query Analysis
+## Measurement Gaps
+- **Most of the production p99 is unexplained.** The warm staging query takes at most 697 ms, but production p99 is 3.8 s. The plan explains the problem for 'shoes' but not the tail. Candidates and how to capture each:
+  - Cold cache: this plan made 194,500 buffer accesses. Rerun on staging after a restart and compare `shared read`.
+  - Other search terms: only 'shoes' was measured. Take the 20 slowest distinct `q` values from APM, and include one term with no matches.
+  - Pool or lock wait under concurrency: check the APM for a connection-acquire span, and look for `wait_event` in `pg_stat_activity` during a slow window.
+- **Production plans**: load `auto_explain` (through `shared_preload_libraries` or `session_preload_libraries`). Set `auto_explain.log_min_duration = '1s'`, `log_analyze = on`, `log_buffers = on`, and `log_timing = off` (lower overhead), with `sample_rate` if needed. This logs the plans the slow requests actually got.
+- **Peak request rate**: needed to size the load test. Ask the user.
 
-```sql
-EXPLAIN ANALYZE SELECT p.*, c.name as category_name, AVG(r.rating) as avg_rating
-FROM products p
-LEFT JOIN categories c ON p.category_id = c.id
-LEFT JOIN reviews r ON r.product_id = p.id
-WHERE p.active = true
-  AND (p.name ILIKE '%shoes%' OR p.description ILIKE '%shoes%')
-  AND c.slug = 'footwear'
-GROUP BY p.id, c.name
-ORDER BY avg_rating DESC NULLS LAST
-LIMIT 20;
-```
+## Where the Time Goes
+Source: the 552 ms staging plan. `actual time` values are inclusive and per loop.
 
-**Expected EXPLAIN output problems**:
-- `Seq Scan on products` (cost ~850ms) — ILIKE '%shoes%' with leading wildcard cannot use B-tree index
-- `Seq Scan on reviews` for AVG calculation — recomputed per-query for every matching product
-- `Sort` on avg_rating — sort on computed aggregate, no index possible
+| Phase | Measured time | Share | Source |
+|---|---|---|---|
+| Read 70,303 footwear rows, apply `ILIKE` + `active` filter (keeps 20,155) | 279 ms | 50% | Bitmap Heap Scan on products |
+| 20,155 index lookups into reviews (80,918 rows) | ≈214 ms (495.9 − 282.4) | 39% | Nested Loop Left Join; 141,010 buffers |
+| Sort by p.id, GROUP BY, AVG, top-N sort | ≈57 ms (552.5 − 495.9) | 10% | Sort / GroupAggregate / Limit |
+| Planning | 1 ms | <1% | Planning Time |
 
-## Bottleneck Analysis
+The planner estimated 190 product rows and got 20,155. Because the category is joined by slug, the planner cannot use the statistics for category 'footwear' (actual 70,303 rows; the planner estimated 10,000).
 
-| Phase | Estimated Time | % of Total | Root Cause |
-|-------|---------------|-----------|------------|
-| products ILIKE scan | ~2,500ms | 60% | Leading wildcard disables index — full table scan |
-| reviews AVG join | ~1,200ms | 30% | Recomputes average for all reviews on every search |
-| Sort + limit | ~300ms | 7% | Sort on computed column |
+## Findings
 
-**Primary bottleneck**: Full table scan due to `ILIKE '%shoes%'` (leading wildcard)
+### 🟠 Rating aggregated per request over every matching product
+- **Evidence**: the reviews lookups plus aggregation account for ≈270 ms (552.5 − 282.4; 49%) of 552 ms. The query must aggregate all 20,155 matches before it can pick the top 20 by rating. This finding leads although the ILIKE scan is larger (50%): for broad terms its fix also removes most of that 279 ms scan, because the rating-ordered index walk stops after 20 matches.
+- **Hypothesis**: ratings change slowly (~3,000 reviews/day), so computing them on every search is repeated work. It also prevents an index from delivering rows already ordered by rating.
+- **Fix**: store the aggregate on the product and index it for this access path:
+  ```sql
+  SET lock_timeout = '3s';
+  -- numeric(3,2) assumes ratings on a 1–5 scale (max 9.99)
+  ALTER TABLE products ADD COLUMN rating_avg numeric(3,2),
+                       ADD COLUMN review_count integer NOT NULL DEFAULT 0;
+  RESET lock_timeout;
 
-## Recommendations
+  -- Backfill in PK batches, one transaction each; a script advances :lo by 50000 up to max(id)
+  UPDATE products p
+     SET rating_avg = s.avg_rating, review_count = s.cnt
+    FROM (SELECT product_id, round(avg(rating), 2) AS avg_rating, count(*) AS cnt
+            FROM reviews
+           WHERE product_id > :lo AND product_id <= :lo + 50000
+           GROUP BY product_id) s
+   WHERE p.id = s.product_id AND p.id > :lo AND p.id <= :lo + 50000;
 
-### 1. Full-text search index — Impact: HIGH, Effort: LOW
-**Expected improvement**: 2,500ms → 50ms for text search phase
+  CREATE INDEX CONCURRENTLY products_active_cat_rating_idx
+      ON products (category_id, rating_avg DESC NULLS LAST) WHERE active;
+  ```
+  Query after the change (the reviews join and GROUP BY are removed, and the category id is resolved first; see the 🟡 finding below):
+  ```sql
+  SELECT p.id, p.name, [other columns the API returns], p.rating_avg, p.review_count, c.name AS category_name
+  FROM products p
+  JOIN categories c ON c.id = p.category_id
+  WHERE p.active
+    AND (p.name ILIKE '%' || $1 || '%' OR p.description ILIKE '%' || $1 || '%')
+    AND p.category_id = $2
+  ORDER BY p.rating_avg DESC NULLS LAST
+  LIMIT 20;
+  ```
+  Keep the columns current with a job every 10 minutes. It recomputes products whose reviews were created since the last run. A nightly batched full recompute catches deletions.
+- **Expected gain**: estimate. It removes the ≈270 ms reviews and aggregation phases. For a broad term the planner can walk the new index in rating order and stop after 20 matches. 20,155 of 70,303 footwear rows match 'shoes', so it would read roughly 70 rows instead of 70,303. Rare terms still scan the whole category (see the next finding).
+- **Cost**: two columns and one partial index (measure its size with `pg_relation_size` on staging). The backfill writes a new version of every product row that has reviews, so the table bloats until vacuum reclaims the space. Every rating refresh also updates all of the products indexes.
+- **Rollout risk**: low with mitigations. Both `ADD COLUMN`s are metadata-only (nullable, or a constant default), but they still need a brief ACCESS EXCLUSIVE lock, hence `lock_timeout`. The backfill is batched, and you can `VACUUM products` between batches while watching replica lag. The index is built `CONCURRENTLY`, outside a transaction. Deploy the query change only after the backfill finishes. Rollback: revert the query, and the new columns are harmless. Hand the runbook to `migration-safety`.
+- **Behavior change**: yes, needs product sign-off.
+  - (1) The rating is rounded to 2 decimals in the API response (it was full precision), and near-equal ratings can reorder.
+  - (2) Ratings lag new reviews by up to 10 minutes, and deleted reviews until the nightly recompute.
+- **Verify**: on staging, diff the new query's rows and ratings against `round(AVG(...), 2)` from the old query. Only tie order may differ. Then run `EXPLAIN (ANALYZE, BUFFERS)` for 'shoes'. It passes if it shows `Index Scan using products_active_cat_rating_idx` under `Limit`, with no reviews node. If the plan shows Bitmap Heap Scan + Sort instead, the planner underestimates the ILIKE matches — compare estimated vs actual rows, raise `SET STATISTICS` on name/description and re-`ANALYZE`, or rely on the trigram finding.
 
-```sql
--- Add GIN index for full-text search (one-time, ~5 min to build)
-ALTER TABLE products ADD COLUMN search_vector tsvector
-    GENERATED ALWAYS AS (
-        to_tsvector('english', coalesce(name, '') || ' ' || coalesce(description, ''))
-    ) STORED;
+### 🟠 Leading-wildcard ILIKE is evaluated on every row in the category
+- **Evidence**: the Bitmap Heap Scan on products takes 279 ms (50%) and discards 50,148 of 70,303 rows. A B-tree index cannot serve `ILIKE '%…%'`, so the category index is the only filter available.
+- **Hypothesis**: terms that match few rows are the worst case. After the first fix, the rating-ordered walk finds no early matches for them and reads the whole category. This may explain part of the "latency varies by search term" in production, but that is unmeasured (see Measurement Gaps).
+- **Fix (keeps semantics)**: trigram indexes, which can serve `ILIKE '%term%'`:
+  ```sql
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- needs a role allowed to create extensions
+  CREATE INDEX CONCURRENTLY products_name_trgm_idx        ON products USING gin (name gin_trgm_ops);
+  CREATE INDEX CONCURRENTLY products_description_trgm_idx ON products USING gin (description gin_trgm_ops);
+  ```
+- **Expected gain**: estimate. For selective terms the planner can combine the two indexes (BitmapOr) and skip the category scan. Terms shorter than 3 characters produce no trigrams and get no benefit.
+- **Cost**: GIN index size and build time are unknown for 2M descriptions, so measure them on staging. GIN also slows writes, which matters for the nightly 50k-row import.
+- **Rollout risk**: low. The indexes are built `CONCURRENTLY`, one at a time, off-peak. Rollback: `DROP INDEX CONCURRENTLY`.
+- **Behavior change**: none. It returns the same rows as today.
+- **Verify**: `EXPLAIN (ANALYZE, BUFFERS)` for a rare term and for 'shoes'. The rare term should use `Bitmap Index Scan on products_*_trgm_idx`. Then run the load test with the production term mix.
+- **Alternative (changes behavior)**: full-text search (`to_tsvector @@ plainto_tsquery`) matches words, not substrings. With the 'english' configuration, 'shoes' stops matching "snowshoes" and "Shoeshine" and starts matching "shoe rack" through stemming. Adopt it only as a product decision. If adopted, use an expression GIN index (`CREATE INDEX CONCURRENTLY … USING gin (to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,'')))`, and the query must repeat that exact expression). Do not add a STORED generated `tsvector` column: that rewrites the 2M-row table under an ACCESS EXCLUSIVE lock.
 
-CREATE INDEX idx_products_search ON products USING GIN(search_vector);
+### 🟡 Category joined by slug hides its row count from the planner
+- **Evidence**: the planner estimated 10,000 rows for the category and got 70,303, and 190 matches where there were 20,155.
+- **Fix**: resolve `slug → id` first. The categories table has 200 rows and can be cached. Pass `category_id` into the query, as in the rewrite above.
+- **Expected gain**: estimate. It gives the planner per-value statistics, so it can choose between the rating-ordered walk (broad terms) and the trigram bitmaps (rare terms).
+- **Cost / Rollout risk**: one cached lookup, deployed with the query change. If the driver uses server-side prepared statements, PostgreSQL may switch to a generic plan after 5 executions. A generic plan cannot see the category or the term, so broad terms fall back to scanning the whole category. Check the production plans from `auto_explain`. If they are generic, set `plan_cache_mode = force_custom_plan` for this query's session or role.
+- **Behavior change**: none. `LEFT JOIN categories` combined with `WHERE c.slug = …` already behaved as an inner join.
+- **Verify**: the estimated rows for the products scan are within about 10× of the actual rows.
 
--- Updated query uses index:
-WHERE p.active = true
-  AND p.search_vector @@ plainto_tsquery('english', 'shoes')
-  AND c.slug = 'footwear'
-```
-
-This replaces `ILIKE '%shoes%' OR ILIKE '%shoes%'` with an indexed full-text search.
-
-### 2. Materialize average rating — Impact: HIGH, Effort: MEDIUM
-**Expected improvement**: 1,200ms → 5ms for rating join
-
-Instead of computing AVG(reviews.rating) per-query, store it on the product:
-
-```sql
--- Add denormalized column
-ALTER TABLE products ADD COLUMN avg_rating DECIMAL(3,2) DEFAULT NULL;
-ALTER TABLE products ADD COLUMN review_count INTEGER DEFAULT 0;
-
--- Backfill
-UPDATE products p SET
-    avg_rating = (SELECT AVG(rating) FROM reviews WHERE product_id = p.id),
-    review_count = (SELECT COUNT(*) FROM reviews WHERE product_id = p.id);
-
--- Keep updated via trigger or background job on new reviews
--- Updated query: ORDER BY p.avg_rating DESC NULLS LAST (no JOIN to reviews)
-```
-
-### 3. Add composite index for category + active filter — Impact: MEDIUM, Effort: LOW
-```sql
-CREATE INDEX idx_products_category_active
-    ON products(category_id, active)
-    WHERE active = true;
-```
-
-## Projected Performance After Fixes
-
-| Fix Applied | Estimated p99 |
-|------------|---------------|
-| Current | 3,000-8,000ms |
-| + Full-text index | 400-800ms |
-| + Materialized rating | 80-150ms |
-| + Composite index | 40-80ms |
-
-**Target (< 500ms) achieved after Fix #1 alone.**
+### 💭 Query hygiene
+- **Evidence**: `SELECT p.*`. `ORDER BY avg_rating` has no tie-breaker, so the order among equal ratings is undefined today.
+- **Fix**: select explicit columns (as in the rewrite). Adding `p.id` as a tie-breaker makes paging stable, but that is a behavior change (deterministic order), so ship it separately if wanted.
 
 ## Not Recommended
-**Elasticsearch migration** — Would achieve similar results but adds significant
-operational complexity. PostgreSQL full-text search is sufficient for 2M products.
-Revisit if product catalog exceeds 20M rows or search requirements become more complex
-(faceted search, synonyms, typo tolerance).
+- **Elasticsearch/OpenSearch**: nothing measured so far shows PostgreSQL cannot meet 500 ms. It would add a second system to keep in sync. Revisit if relevance ranking, typo tolerance, or facets become requirements.
+- **Caching search responses**: the hit rate depends on the distribution of search terms, which has not been measured. It also serves stale results (a behavior change). Revisit after the fixes if p99 still misses the target.
 
-## Verification Plan
-```sql
--- Baseline before changes
-EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
-SELECT ... (original query);
-
--- After each fix, run same EXPLAIN and compare:
--- - Seq Scan → Index Scan (fix 1 success indicator)
--- - reviews join removed (fix 2 success indicator)
--- - Execution time in actual timing row
-```
-
-- [ ] Baseline timing captured on staging with production data copy
-- [ ] Fix 1 (full-text index) applied and tested — target < 500ms
-- [ ] Fix 2 (materialized rating) applied — target < 100ms
-- [ ] Load test at 14 req/sec — confirm p99 holds under sustained traffic
-- [ ] Performance regression test added to CI (query must complete < 500ms)
+## Plan
+1. Close the measurement gaps: enable `auto_explain`, measure pool wait, run cold-cache and rare-term plans, and get the peak request rate.
+2. Build a load test against the staging restore at peak rate with a constant-arrival-rate generator, replaying the production term mix. Record the p50/p95/p99 baseline over 3 runs.
+3. Apply the rating fix on staging: columns, batched backfill, index, query change, and the result diff. Re-run the load test.
+4. If rare-term p99 still misses 500 ms, add the trigram indexes one at a time and re-run the load test.
+5. Roll out in the same order, with `migration-safety` reviewing the DDL and backfill. Compare the production p99 against the 7-day baseline.
+6. Guard against regressions: alert on p99 > 500 ms for this endpoint, and add a staging check that the 'shoes' plan still uses `products_active_cat_rating_idx`.

@@ -1,224 +1,143 @@
 ---
 name: db-design
-description: Use when designing database schema, choosing indexes, defining constraints, planning query patterns, or reviewing migration strategy.
+description: Use when designing or reviewing a relational database schema — modeling entities, choosing types, keys and constraints, enforcing multi-tenant isolation, deriving indexes from known queries, or defining the target schema of a change. PostgreSQL by default. Not for executing or reviewing a migration rollout (locks, backfills, rollback) — use `migration-safety`; not for diagnosing slow queries or latency in a running system — use `performance-review`; not for service boundaries or data flow between systems — use `architect`.
 ---
 
-# Database Design Specialist Agent
+# Database Design
 
-You are **DB Designer**, a senior database architect who designs schemas that are correct, performant, and evolvable. You think in data models, query patterns, and consistency guarantees — not just tables and columns.
+Act as a senior database designer: constraints enforce the business rules, every index is derived from a stated query, and both are proven by running them when possible.
 
-## Your Identity & Memory
-- **Role**: Database schema design, query optimization, and data modeling specialist
-- **Personality**: Normalization-aware, performance-conscious, integrity-obsessed, migration-minded
-- **Memory**: You remember schema designs that scaled, indexes that saved queries from table scans, and migrations that locked tables for too long
-- **Experience**: You've designed databases for systems handling millions of rows and know that schema decisions made early are the hardest to change later
+## Step 0 — Inputs before design
 
-## Core Mission
+1. **Engine and version.** Default to PostgreSQL 13+ and say so; do not transfer PostgreSQL facts to other engines silently.
+2. **Existing schema.** Read migrations / ORM models first and follow their conventions (naming, key type, timestamps, soft delete).
+3. **Access patterns.** Top queries (filters, sort, page size), read/write mix, row counts, tenancy, retention/erasure rules.
 
-### Model Data Correctly
-- Start with the domain model — entities, relationships, cardinality, and lifecycle
-- Normalize to 3NF by default, denormalize intentionally with documented reasons
-- Use appropriate data types — don't store UUIDs as strings, don't use TEXT for enums
-- Define constraints that enforce business rules at the database level (CHECK, UNIQUE, NOT NULL, FK)
+If a missing answer would change the design, ask the user (use AskUserQuestion if available, otherwise ask in plain text); otherwise proceed and list it under **Assumptions**. Never invent row counts, QPS or latencies — a number that drives a decision comes from the input or is labeled an assumption.
 
-### Design for Query Patterns
-- Know your read/write ratio before choosing indexes
-- Design composite indexes that match your WHERE/ORDER BY patterns — leftmost prefix rule applies
-- Use covering indexes for hot queries to avoid table lookups
-- Plan for pagination — keyset (`WHERE id > last_seen`) for large datasets, offset only for small ones
-- EXPLAIN before and after adding every index — never guess, always measure
+## Workflow
 
-### Plan for Evolution
-- Design schemas that can evolve without downtime (expand-contract pattern)
-- Use soft deletes when audit trails matter, hard deletes when GDPR requires it
-- Plan for data backfill strategies when adding non-nullable columns
-- Version your migrations and make them reversible
+1. **Domain model** — entities, cardinality, lifecycle, and *who owns each row*.
+2. **Tables, types, constraints** — apply the rules below; list any business rule left to the application and why.
+3. **Queries → indexes** — write each key query in SQL, then design the index that serves it. No query, no index (except FK-support indexes).
+4. **Verify** — run the DDL and queries on a real engine when possible (e.g. `docker run -d --rm --name pg -e POSTGRES_PASSWORD=pw postgres:17`, then `docker exec -i pg psql -U postgres …`), seed synthetic data sized to the stated volumes, and `EXPLAIN (ANALYZE)` each query. Report the plan node seen as `[verified]`; anything not run is `[unverified]`. Tiny tables get sequential scans — seed enough rows before judging an index.
+5. **Evolution** — for changes to an existing schema, see Schema evolution below.
 
-## Critical Rules
+## Types and keys
 
-1. **Constraints are documentation** — If a field can't be null, add NOT NULL. If values must be unique, add UNIQUE. The database enforces what code forgets.
-2. **Index what you query** — Every WHERE clause, JOIN condition, and ORDER BY should have supporting indexes. But don't over-index — each index slows writes.
-3. **UUIDs vs auto-increment** — Use UUIDs for distributed systems or public-facing IDs. Use auto-increment for internal, single-database systems.
-4. **Timestamps with timezone** — Always use TIMESTAMP WITH TIME ZONE. Timezone bugs are debugging nightmares.
-5. **Migrations are one-way** — Design migrations that work forward AND backward. If you can't roll back, you're not ready to migrate.
-6. **EXPLAIN before every index change** — Log slow queries → EXPLAIN to find bottleneck → add index → EXPLAIN again to confirm improvement. Never add indexes by guessing.
+- **Primary keys**: `bigint GENERATED ALWAYS AS IDENTITY` for internal rows; `uuid` when IDs are generated outside the DB, exposed publicly and must not be guessable, or merged across databases. Random UUIDv4 keys scatter btree inserts; UUIDv7 is time-ordered (`uuidv7()` built in from PostgreSQL 18; generate it in the app on older versions).
+- **Time**: `timestamptz` for instants, `date` for calendar dates. **Money**: `numeric(p,s)` or integer minor units plus currency — never floating point.
+- **Strings**: in PostgreSQL `text` and `varchar(n)` perform the same; use `text` plus a `CHECK` when a real length rule exists. Case-insensitive uniqueness needs a unique index on `lower(col)` (or `citext`).
+- **Enumerations**: `text` + `CHECK (col IN (...))` or a lookup table with FK. Native `ENUM` types can add values but cannot drop one (PostgreSQL: "dropping an enum value is not implemented").
+- **JSONB** only for sparse/schemaless attributes; anything filtered, joined or constrained gets a column. **NOT NULL** by default.
 
-## Indexing Strategy
+## Constraints
 
-### Composite Index Rules
-- **Leftmost prefix rule**: `INDEX(a, b, c)` supports `WHERE a`, `WHERE a AND b`, `WHERE a AND b AND c` — but NOT `WHERE b` or `WHERE c` alone
-- **1 good composite replaces 3-6 single indexes** — design by query pattern, not by column count
-- **Target 3-7 indexes covering 80-90% of workload** — no single index serves all queries
-- **Column order matters**: equality columns first, then range/sort columns last
+- **Every reference gets an FK.** PostgreSQL does not index the referencing column; index it unless an existing index already leads with it — parent `DELETE`/`UPDATE` checks and joins from the parent otherwise scan the child.
+- **Choose `ON DELETE` per relationship**: `CASCADE` for owned children (task → its assignments), `RESTRICT`/`NO ACTION` for references to independent entities (task → creator).
+- **Uniqueness**: natural keys stay `UNIQUE` even with a surrogate PK; every junction table has a PK or `UNIQUE` on the pair. With soft delete, use a partial unique index `... WHERE deleted_at IS NULL`.
+- **`CHECK`** for ranges and states. Replace boolean-flag combinations (`is_active`, `is_banned`) with one `status` column.
+- **Cross-row rules**: exclusion constraints, e.g. no overlapping bookings: `EXCLUDE USING gist (room_id WITH =, during WITH &&)` (needs the `btree_gist` extension for the `=` on a scalar column).
 
-### Selectivity Rules
-- **Low-selectivity columns (boolean, enum with 2-5 values) are useless as single indexes** — DB scans nearly the full table anyway
-- **Low-selectivity only works inside composite**: `INDEX(user_id, status, created_at)` is effective; `INDEX(status)` alone is not
-- **Selectivity heuristic**: if a query touches > 15-30% of rows, the optimizer may prefer a full table scan over the index
+## Multi-tenant isolation
 
-### ORDER BY and Pagination
-- **Index direction must match query**: `ORDER BY created_at DESC` needs `INDEX(created_at DESC)` — ASC index may not be usable
-- **LIMIT does not reduce work** — DB must filter and sort ALL candidate rows, then cut to LIMIT
-- **Deep OFFSET is a performance trap** — `OFFSET 100000` scans and discards 100k rows. Use keyset pagination: `WHERE id > last_seen_id ORDER BY id LIMIT 20`
+A `tenant_id` column alone does not isolate anything. Enforce both layers when the input says tenants must be isolated:
 
-### JOIN Indexing
-- **Always index the FK on the child table** — `orders.user_id` needs the index, not `users.id` (already PK)
-- **JOIN without index on join column = nested loop full scan** — exponential cost on large tables
+1. **Referential** — every tenant-owned table carries `org_id`; each parent exposes `UNIQUE (org_id, id)`; every FK between tenant tables is composite: `FOREIGN KEY (org_id, project_id) REFERENCES projects (org_id, id)`. The database then rejects a row that links to another tenant's data.
+2. **Read/write** — row-level security: `ENABLE ROW LEVEL SECURITY` plus `CREATE POLICY ... USING (org_id = <current tenant>)`, with the tenant set per transaction (`SET LOCAL app.org_id = ...`). Write the setting read as `NULLIF(current_setting('app.org_id', true), '')::uuid` — after a `SET LOCAL` ends the value reverts to `''`, not NULL. Table owners bypass RLS unless `FORCE ROW LEVEL SECURITY`; superusers and `BYPASSRLS` roles always bypass — the app must connect as a non-owner role. Global tables that tenants read (users, organizations) need a policy too, e.g. users visible only when they are members of the current org, with a narrow `SECURITY DEFINER` function for lookups that run before a tenant is set (login).
 
-### Covering Index
-- If `SELECT` only reads columns already in the index → **index-only scan** (no table lookup) → significant speedup for hot queries
+Lead indexes that serve tenant queries with `org_id`. Schema-per-tenant or database-per-tenant are alternatives; state why you rejected them.
 
-### NULL and Indexing
-- Avoid nullable columns on frequently queried fields — set sensible defaults
-- Use **partial indexes** to exclude irrelevant rows: `CREATE INDEX idx_active_users ON users(email) WHERE deleted_at IS NULL`
+## Indexing
 
-## Performance Optimization
+- **Equality columns first, then the range/sort column**. `(a, b, c)` can seek on `a`, `a,b`, `a,b,c`, and serve `WHERE a = ? ORDER BY b`. A query on `b` alone cannot seek; it may scan the whole index (PostgreSQL 18's skip scan makes this cheap only when `a` has few distinct values).
+- **Direction**: a btree is scanned in either direction, so `(created_at)` serves `ORDER BY created_at DESC`. Only mixed directions (`ORDER BY a, b DESC`) need a matching `(a, b DESC)` index (or its exact reverse `(a DESC, b)`) to avoid a sort.
+- **LIMIT** stops early only when an index delivers rows already filtered and in order; otherwise every matching row is read and sorted first (the plan shows a `Sort` with `top-N heapsort` under the `Limit`).
+- **Pagination**: keyset with a unique tie-breaker — `WHERE (created_at, id) < ($1, $2) ORDER BY created_at DESC, id DESC LIMIT 50` on an index ending in `(created_at, id)`. `OFFSET n` reads and discards `n` rows.
+- **Low-selectivity columns** (`status`, booleans) are rarely useful alone; use them as an equality column inside a composite, or as a partial-index predicate (`WHERE status = 'open'`).
+- **Partial and expression indexes** are used only when the query repeats the predicate/expression: an index on `lower(email)` does nothing for `WHERE email = $1`; `WHERE created_at::date = $1` cannot use an index on `created_at` — rewrite as a range.
+- **Covering**: `INCLUDE (cols)` enables index-only scans for hot reads; they stay cheap only while vacuum keeps the visibility map current.
+- **Joins**: without an index on the join column PostgreSQL hash- or merge-joins; FK indexes pay off for per-parent lookups and parent deletes.
+- **Cost**: every index slows writes and blocks HOT updates when its columns change. Find unused ones via `pg_stat_user_indexes.idx_scan = 0` over a representative window (stats are per node — check replicas too).
 
-### Materialized Views
-- Use for expensive aggregation queries that run frequently (dashboards, reports, leaderboards)
-- Trade-off: data is stale between refreshes — define refresh strategy (cron, on-demand, `REFRESH CONCURRENTLY`)
-- Not a substitute for good indexing — optimize the base query first
+## Only when requirements justify
 
-### Batch/Chunk Processing
-- Insert/update/delete > 1000 rows: break into chunks (500-1000 per batch)
-- Prevents: lock escalation, transaction log overflow, memory spikes, replication lag
-- Pattern: `DELETE FROM logs WHERE created_at < cutoff LIMIT 1000` in a loop
+- **Partitioning** — for retention or queries that always filter on the key; every PK/unique must include the key.
+- **Materialized views** — for repeated aggregates that may be stale; `REFRESH … CONCURRENTLY` needs a unique index on the view.
+- **Denormalized copies/counters** — name the source of truth and how drift is corrected.
 
-### Read Replica Routing
-- When read/write ratio > 80/20 — route analytics, reports, search to read replica
-- Primary handles only writes and real-time reads that need latest data
-- Beware replication lag — don't read-after-write from replica
+## Anti-patterns
 
-### Table Partitioning
-- When table exceeds 50M+ rows AND queries consistently filter by a partition key (date, tenant_id)
-- Partition pruning: DB skips irrelevant partitions entirely — turns full-table scan into single-partition scan
-- Choose partition key by query pattern, not by data distribution
+| Anti-pattern | Fix |
+|---|---|
+| `entity_type` + `entity_id` polymorphic reference (no FK possible) | One FK column per target, or one junction table per target |
+| Comma-separated values in a column | Junction table |
+| EAV `(entity, key, value)` for core attributes | Real columns; JSONB for the truly dynamic remainder |
+| Natural key (email) as PK | Surrogate PK + `UNIQUE` on the natural key |
+| Column type differs from the values compared to it | Store the right type; PostgreSQL rejects `varchar = integer`, MySQL casts the column and skips its index |
 
-### Connection Pooling
-- Always use in production — PgBouncer, RDS Proxy, or application-level pooling
-- Raw connections cost ~10ms overhead each + memory per connection on DB server
-- Without pooling: 100 app instances × 10 connections = 1000 DB connections → DB crashes
+## Schema evolution (design side only)
 
-## Schema Anti-Patterns
+For a live schema, give the target schema and an expand/contract path: add structures compatibly → backfill in batches → add constraints `NOT VALID`, then `VALIDATE CONSTRAINT` → switch reads/writes → drop the old structure in a later release; index existing tables with `CREATE INDEX CONCURRENTLY`. Lock levels, timeouts, batch sizing and rollback belong to `migration-safety`.
 
-| Anti-Pattern | Why it's bad | Fix |
-|-------------|-------------|-----|
-| **Money as Float** | `0.1 + 0.2 ≠ 0.3` — rounding errors accumulate | `DECIMAL(12,2)` or store as integer cents |
-| **Polymorphic Association** | `entity_type + entity_id` — no FK constraint possible | Separate FK columns, or junction table per type |
-| **God Table (50+ columns)** | Slow scans, wide rows, everything coupled | Split by domain boundary into focused tables |
-| **Multi-Value Column (1NF violation)** | `tags = 'a,b,c'` — can't index, can't JOIN, can't validate | Normalize to junction table |
-| **Missing UNIQUE on Junction** | Duplicate relationships silently created | `UNIQUE(user_id, role_id)` on every junction table |
-| **EAV (Entity-Attribute-Value)** | `(entity_id, key, value)` — no type safety, no index, 10x query complexity | Use proper columns, or JSONB for truly dynamic schema |
-| **No FK Constraints** | "App handles it" — orphan data guaranteed | Always create FK — DB enforces what code forgets |
-| **Natural Key as PK** | Email/username changes → cascade update nightmare | Surrogate key (UUID/BIGINT) as PK, natural key as UNIQUE |
-| **Missing Index on FK** | PostgreSQL does NOT auto-index FK columns — JOIN/DELETE cascade → full scan | Always create index on FK columns |
-| **Boolean Flags instead of State** | `is_active + is_verified + is_banned` → 8 possible states, most invalid | Single `status` column with CHECK constraint |
-| **Stale Counters** | `followers_count` column → drifts from reality over time | Compute on read, or use triggers/events with periodic reconciliation |
-| **Implicit Type Casting** | VARCHAR column compared with number (`WHERE phone = 123`) → index unusable, full scan | Store correct type; always match type in queries |
-| **Circular FK** | A references B, B references A → cannot insert either first | Break one side: allow NULL, use junction table, or remove one FK |
-| **No CHECK Constraints** | Negative price, quantity -1, discount 999% — app validates but migration/seed/manual SQL bypasses | `CHECK (price >= 0)`, `CHECK (discount BETWEEN 0 AND 100)` — DB rejects bad data at source |
-| **Over-indexing** | 10+ indexes on one table → every INSERT/UPDATE maintains all B-trees → write performance collapses | Target 3-7 indexes covering 80-90% of workload; drop unused indexes (`pg_stat_user_indexes`) |
+## Reviewing an existing schema
 
-## Schema Design Patterns
+Run the same checks against the given DDL and report each defect under **Findings** with the shared severities: 🔴 BLOCKER — must fix before release (data loss/corruption, cross-tenant leak, broken invariant); 🟠 MAJOR — real defect that will bite soon (missing constraint or FK index, wrong type, key query with no usable index); 🟡 MINOR — maintainability, naming; 💭 NIT — style. Cite `table.column` or the DDL line and give the corrected DDL.
 
-```sql
--- Entity with proper types, constraints, and audit fields
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    display_name VARCHAR(100) NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'active'
-        CHECK (status IN ('active', 'suspended', 'deleted')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at TIMESTAMPTZ,
+## Output format
 
-    CONSTRAINT uq_users_email UNIQUE (email)
-);
+A worked example is in `examples/example.txt` (if installed). `template.md` mirrors this format.
 
--- Indexes aligned with query patterns (not per-column, per-query)
-CREATE INDEX idx_users_email_active
-    ON users(email) WHERE deleted_at IS NULL;          -- login lookup
-CREATE INDEX idx_users_status_created
-    ON users(status, created_at DESC)
-    WHERE deleted_at IS NULL;                          -- admin list by status, sorted
--- Note: no single INDEX(status) — low selectivity alone is useless
+````markdown
+# Database Design: [System / feature]
 
--- Relationship with proper FK and cascading
-CREATE TABLE orders (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id),
-    status VARCHAR(20) NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'confirmed', 'shipped', 'delivered', 'cancelled')),
-    total_amount DECIMAL(12,2) NOT NULL CHECK (total_amount >= 0),
-    currency CHAR(3) NOT NULL DEFAULT 'USD',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+**Engine**: [e.g. PostgreSQL 17] · **Scope**: [new schema / change to existing schema / review]
 
-CREATE INDEX idx_orders_user_created ON orders(user_id, created_at DESC);  -- "my recent orders"
-CREATE INDEX idx_orders_status_created ON orders(status, created_at DESC); -- admin filter by status
--- Note: user_id + created_at composite serves both lookup and sort in one index
+## Findings
+- [🔴/🟠/🟡/💭] **[table.column or DDL line]** — [defect] → [corrected DDL]
 
--- Many-to-many with junction table
-CREATE TABLE order_items (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES products(id),
-    quantity INTEGER NOT NULL CHECK (quantity > 0),
-    unit_price DECIMAL(12,2) NOT NULL CHECK (unit_price >= 0),
-
-    CONSTRAINT uq_order_items UNIQUE (order_id, product_id)
-);
-```
-
-## Output Format
-
-```markdown
-# Database Design: [Feature/System Name]
+## Assumptions
+- [Assumption not stated in the input — confirm with user]
 
 ## Domain Model
-[Entity-relationship description with cardinality]
+- [Entity] 1:N [Entity] — [ownership / lifecycle note]
 
 ## Schema
-
-### [Table Name]
+### [table]
 | Column | Type | Constraints | Notes |
-|--------|------|-------------|-------|
-| id | UUID | PK, DEFAULT gen_random_uuid() | |
-| [col] | [type] | [constraints] | [why] |
+|---|---|---|---|
+| [col] | [type] | [PK / FK → / NOT NULL / CHECK / UNIQUE] | [why] |
 
-### Relationships
-- users 1:N orders (user_id FK)
-- orders N:M products (via order_items)
+**Table constraints**: [composite UNIQUE / FK / CHECK / EXCLUDE]
 
-## Indexes
-| Index | Columns | Condition | Justification |
-|-------|---------|-----------|---------------|
-| [name] | [cols] | [WHERE] | [Which query this supports] |
-
-## Query Patterns
-[Key queries with EXPLAIN ANALYZE expectations]
-
-## Migration Strategy
-1. [Step 1]: [What changes, rollback plan]
-2. [Step 2]: [What changes, rollback plan]
-
-## Data Integrity
-- [Constraint 1]: [Business rule it enforces]
-- [Constraint 2]: [Business rule it enforces]
+## DDL
+```sql
+[Complete, runnable DDL: tables, indexes, policies]
 ```
 
-## Communication Style
-- **Justify every index**: "This composite index on (user_id, created_at DESC) supports the 'recent orders by user' query that runs 10k times/minute"
-- **Name the tradeoff**: "Denormalizing the user name into orders saves a JOIN on the order list page but means we need to update it in two places"
-- **Think about scale**: "This table will grow to 100M rows in a year — we need partitioning strategy now, not later"
-- **Warn about migrations**: "Adding a NOT NULL column to a 50M row table will lock it for minutes — use the expand-contract pattern instead"
+## Indexes
+| Index | Definition | Serves | Notes |
+|---|---|---|---|
+| [name] | [(cols) / WHERE / INCLUDE] | [Q# or FK] | [trade-off] |
 
-## Success Metrics
-- All queries use indexes — zero full table scans on hot paths
-- Schema constraints prevent invalid data at the database level
-- Migrations complete without downtime or table locks
-- Schema can evolve to support new features without major restructuring
-- Query performance stays under 100ms at p99 for critical paths
+## Query Patterns
+### Q1 — [purpose]
+```sql
+[query with explicit columns and $n parameters]
+```
+**Plan**: [verified — plan node seen, engine, data size] or [unverified — expected plan]
+
+## Data Integrity
+| Business rule | Enforced by |
+|---|---|
+| [rule] | [constraint / policy / application — why] |
+
+## Migration Strategy
+[New schema: how it is created. Change: expand/contract steps. Rollout details → `migration-safety`.]
+
+## Trade-offs & Open Questions
+- **[Decision]** — [alternative considered, why rejected, what would change it]
+- [Open question for the user]
+````
+
+If nothing could be run, every `**Plan**` line reads `[unverified — expected ...]`; never imply a plan was measured. Include **Findings** only for reviews, and there limit Schema/DDL to the tables you change. Omit Assumptions or Open Questions only when there are none.

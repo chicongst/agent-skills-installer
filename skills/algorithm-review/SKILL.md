@@ -1,156 +1,125 @@
 ---
 name: algorithm-review
-description: Use when reviewing code for algorithm optimization — identifies where better data structures, sorting, or search approaches would improve performance, readability, or scalability.
+description: Use when reviewing code for algorithmic complexity — nested loops, repeated scans, wrong data structure, brute force where a known algorithm (hashing, sorting, binary search, prefix sums, heaps, graph traversal) would change the Big-O. Proposes behavior-preserving rewrites verified against the original. Not for profiling a running system or diagnosing slow queries and N+1 (use `performance-review`), schema or index design (use `db-design`), general bug review (use `code-review`), or applying the change (hand the verified rewrite to `refactor`).
 ---
 
-# Algorithm Review Agent
+# Algorithm Review
 
-You are **Algorithm Reviewer**, a senior engineer who spots code that would benefit from well-known algorithms or better data structures. You don't over-optimize — you identify places where the right algorithm turns O(n²) into O(n), or where a simple technique eliminates unnecessary complexity.
+Review code for places where a better algorithm or data structure changes the complexity at the scale the code actually runs at. This is a review skill: propose rewrites in the report; do not edit the user's files.
 
-## Your Identity & Memory
-- **Role**: Algorithm and data structure optimization reviewer
-- **Personality**: Practical, performance-aware, teaches by showing before/after
-- **Experience**: You know that most performance wins come from choosing the right data structure, not clever tricks
+A worked example is in `examples/example.txt` (if installed). `template.md` mirrors the Output Format below.
 
-## Core Mission
+## Core Rules
 
-Review code and identify where applying a well-known algorithm or data structure would meaningfully improve performance, readability, or scalability. Silently apply when writing code. Explain only when reviewing.
+1. **Scale first.** Before judging, establish n (and m, k…), call frequency, and whether the path is hot. Take them from the input or code; if unknown, ask the user (use AskUserQuestion if available, otherwise ask in plain text) or state an explicit assumption in the report. Without scale, a finding is at most 🟡 MINOR, unless untrusted input controls n (see BLOCKER).
+2. **Complexity claims must be exact.** Count every term, including hidden costs (see table below) and output size. If the output itself can be O(n²), no behavior-preserving rewrite beats O(n²) — say "O(n + D) where D = output size", not "O(n)". Say amortized/expected where it applies (hash maps, union-find).
+3. **Every rewrite must preserve behavior.** The optimized code must return the same result (same values, same order, same multiplicity, same exceptions) as the original for every input the original accepts — work through the edge-case checklist below.
+4. **Verify by running old vs new.** When you can execute code, write a throwaway harness outside the repo (a temp dir) that runs the original and the rewrite on the same inputs — hand-picked edge cases plus randomized inputs — and asserts equal output. Report what was run. If you cannot execute, mark the finding `Equivalence: NOT verified` and include the harness for the user to run.
+5. **Behavior changes are separate.** If the original looks buggy (e.g. emits a duplicate twice) or preservation is impossible, do not fold a "fix" into the optimization. List it under **Behavior changes / questions** and let the user decide. An optimization that silently changes output is a defect, not a finding.
+6. **No invented measurements.** Big-O and operation counts derived from stated sizes are fine. Wall-clock numbers only if the input provides them; otherwise label them "estimate". For profiling, route to `performance-review`.
+7. **Say when it's fine.** Small bounded n, cold paths, or a rewrite that costs more readability than it saves: list under **Fine as-is** with the reason.
 
-## When NOT to Optimize
+## Edge-Case Checklist (for every rewrite)
 
-- Data set is small and fixed (< 100 items) — readability wins over performance
-- Code is prototype/PoC — ship first, optimize later
-- The "optimization" makes code harder to understand with negligible gain
-- Premature optimization: measure first, optimize the hot path only
+| Case | What typically breaks |
+|------|-----------------------|
+| Duplicates / multiplicity | Set-based dedup emits each item once where the original emitted per pair; counts collapse |
+| Missing keys / `None` / unknown references | Original skipped or never touched a field (short-circuit, empty loop); rewrite indexes it eagerly → `KeyError`/NPE, or silently drops rows the original kept |
+| Empty input, single element | Rewrite touches data the original never read; `max()` of empty; off-by-one in index arrays |
+| Ordering and ties | Set/hash iteration order differs; unstable sort; heap tie-breaking differs from stable sort; top-k with equal counts |
+| Absent groups | Original emitted zero-count entries; `Counter`/`groupBy` only has keys that occurred |
+| Inverted or out-of-range bounds | `start > end`, bounds outside the data; prefix-sum difference goes negative |
+| Equality semantics | Hashing vs `==` (NaN, `1 == 1.0 == True`, case, custom `__eq__`), unhashable keys |
+| Floating point | Reordered additions (prefix sums, parallel reduce) are not bit-identical |
+| Identity and mutation | Original returned the same objects vs copies; rewrite mutates input or shares state |
+| Iterators / side effects | Rewrite iterates a one-shot iterator twice; early exit skips side effects the original ran |
+| Staleness | Precomputed index/cache not invalidated when the source data changes |
 
----
+If the rewrite relies on an assumption (e.g. "ids are ints and always present"), state it in the finding.
 
-## Algorithms & Data Structures Reference
+## Workflow
 
-### Searching
+1. **Scope** — list the functions in scope, the scale for each, and which run hot (loops, per-request, per-row).
+2. **Spot signals** — nested loops over the same or related collections, lookups inside loops, repeated recomputation, sorting inside a loop, brute-force enumeration, recursion with overlapping subproblems.
+3. **Derive current complexity** — including hidden costs.
+4. **Pick the smallest rewrite** that removes the dominant term. Prefer the language's standard library over hand-rolled structures.
+5. **Audit edge cases, then run the equivalence harness** (Rules 3–4).
+6. **Rank** by impact at stated scale and assign severity.
 
-**Binary Search** — O(log n) instead of O(n)
-- When: searching in sorted data, finding boundaries, threshold detection
-- Signals in code: linear scan through sorted array, `for` loop just to find one item in sorted list
+## Hidden Costs to Count
+
+| Construct | Cost |
+|-----------|------|
+| Python `x in list`, `list.index`, `list.remove`, `list.pop(0)`, `list.insert(0, x)` | O(n) — use `set`/`dict`, `collections.deque` |
+| JS `arr.includes/indexOf/find` in a loop; `arr.shift()`; `[...acc, x]` or `{...acc}` in `reduce` | O(n) each → O(n²) overall |
+| Java `List.contains`, `ArrayList.remove(0)`; C# `List.Contains`, `RemoveAt(0)`; C# re-enumerating an `IEnumerable` (`.Count()`, `.ElementAt(i)`) inside a loop | O(n) each |
+| String concatenation in a loop (most languages) | O(n²) worst case — use a builder / `join` |
+| Slicing / copying inside a loop | O(k) per iteration |
+| Sorting inside a loop | O(n log n) per iteration — sort once outside |
+| DB/HTTP call inside a loop | Not an algorithm issue — route to `performance-review` (N+1, slow queries) or `db-design` (missing indexes) |
+
+## Technique Reference
+
+Complexities are for the operation named; include build cost when a structure is built for a single use.
+
+- **Hash map / set** — expected O(1) lookup instead of O(n) scan. Signals: lookup or `contains` inside a loop, pairwise comparison to find matches, manual grouping. Needs hashable keys with consistent equality.
+- **Frequency map / group-by** — one O(n) pass instead of one scan per group. Remember groups with zero occurrences.
+- **Sort + scan / two pointers** — O(n log n) once, then linear passes: pairs in sorted data, merging, nearest value, interval overlap.
+- **Binary search** — O(log n) per query on sorted data. Only a win if the data is already sorted or queried many times; sorting for one lookup is worse than a scan.
+- **Heap / priority queue** — top-k in O(n log k); repeated min/max with inserts in O(log n) each instead of re-sorting.
+- **Prefix sums** — O(n) build; range sum is O(1) on a dense index (array indexed by position/day), O(log d) with binary search over sparse sorted keys. Integer/exact types only if results must be identical.
+- **Sliding window** — O(n) for moving sums/counts; monotonic deque for window max/min.
+- **Counting / bucket sort** — O(n + k) when values fall in a small known range k.
+- **Topological sort (Kahn's)** — O(V + E) dependency ordering; reports cycles instead of looping until "everything resolves".
+- **BFS / DFS** — O(V + E); BFS for unweighted shortest paths.
+- **Dijkstra** — O((V + E) log V) with a binary heap; non-negative weights only (negative weights → Bellman-Ford).
+- **Union-find** — near-constant amortized per op (with path compression + union by rank) for dynamic connectivity instead of repeated BFS.
+- **Trie** — prefix lookup without scanning every string.
+- **Memoization / DP** — overlapping subproblems in pure functions; bound the cache.
+- **Greedy** — only when an exchange argument proves it optimal (interval scheduling, Huffman). Coin change is greedy-optimal only for canonical coin systems; otherwise DP.
+- **String search** — standard library `find`/`indexOf` is already efficient for typical inputs; hand-written KMP/Rabin-Karp only for measured bottlenecks or multi-pattern search (Aho-Corasick).
+
+## Severity
+
+Same four levels as `code-audit`, applied to complexity:
+
+- **🔴 BLOCKER** — at stated scale the path exceeds a stated time/memory limit, or untrusted input can trigger super-linear work (algorithmic DoS: O(n²) on request payloads, catastrophic regex backtracking).
+- **🟠 MAJOR** — hot path at stated scale where a standard technique removes a factor of n (or more).
+- **🟡 MINOR** — real improvement but small at current scale, or matters only if scale grows or call frequency rises.
+- **💭 NIT** — data-structure choice that improves readability with no meaningful cost difference.
+
+## Output Format
+
+```markdown
+# Algorithm Review: [scope]
+
+**Scale**: [n, m, call frequency per function — "from input" or "assumed: …"]
+**Verdict**: [Optimize now / Optimize if scale grows / Fine as-is] — [one sentence]
+
+## Findings
+
+### [🔴/🟠/🟡/💭] [Short title]
+**Location**: [file:line–line or function name]
+**Signal**: [the pattern that triggered this finding]
+**Current**: [O(...) — which term dominates, with operation count at stated scale]
+**Proposed**: [O(...) — technique name]
+
+Before:
+[original code, or the relevant lines]
+
+After:
+[rewrite]
+
+**Edge cases checked**: [duplicates, missing keys, empty input, ordering/ties, … — and how each is preserved; assumptions stated]
+**Equivalence**: [what was run — edge cases + N randomized inputs, old vs new, all equal] or [NOT verified — harness below]
+**Behavior changes / questions**: [None, or what the user must decide]
+
+## Fine As-Is
+- [function/location] — [why no change is needed]
+
+## Top Priorities
+1. [Most impactful change]
+2. [...]
 ```
-// Instead of scanning all prices to find first >= target
-// Use binary search on sorted array
-```
 
-**Hash Map / Set Lookup** — O(1) instead of O(n)
-- When: checking existence, counting frequency, grouping, deduplication
-- Signals in code: nested loops comparing every pair, `.includes()` or `.indexOf()` inside a loop, repeated linear scans for the same data
-```
-// Instead of: users.find(u => u.id === targetId) in a loop
-// Build a map: Map<id, user> — one pass to build, O(1) per lookup
-```
-
-**Two Pointers** — O(n) instead of O(n²)
-- When: finding pairs in sorted arrays, merging sorted lists, palindrome checks
-- Signals in code: nested loops on sorted data where both indices only move forward
-
-### Sorting & Ordering
-
-**Pre-sort + Scan** — sort once, query many times
-- When: repeated searches, range queries, finding closest values
-- Signals in code: multiple passes through unsorted data looking for min/max/nearest
-
-**Topological Sort** — resolve dependency order
-- When: task scheduling, build systems, migration ordering, course prerequisites
-- Signals in code: manual dependency resolution with nested checks, retry loops until all dependencies met
-
-**Counting Sort / Bucket Sort** — O(n) when value range is bounded
-- When: sorting integers in known range, age distribution, rating histogram
-- Signals in code: general sort used on small integer ranges
-
-### Aggregation & Counting
-
-**Frequency Map** — count occurrences in one pass
-- When: finding most common element, detecting duplicates, word count, group by
-- Signals in code: nested loops to count, multiple passes through same data
-```
-// One pass: build frequency map { item: count }
-// Then: find max, filter threshold, detect anomalies
-```
-
-**Prefix Sum / Running Total** — O(1) range sum queries after O(n) preprocessing
-- When: sum of subarray, cumulative statistics, range queries
-- Signals in code: recalculating sum from scratch for each query window
-
-**Sliding Window** — O(n) for fixed/variable window problems
-- When: moving averages, max/min in window, substring problems, rate limiting counters
-- Signals in code: nested loop recalculating entire window on each step
-
-### Graph & Tree
-
-**BFS / DFS** — systematic traversal
-- When: finding paths, connected components, cycle detection, tree operations
-- Signals in code: complex recursive logic without clear traversal strategy, manual visited tracking with bugs
-
-**Dijkstra / Shortest Path** — weighted shortest path
-- When: routing, cheapest cost, minimum steps with varying weights
-- Signals in code: brute-force trying all paths, nested loops comparing routes
-
-**Union-Find (Disjoint Set)** — O(α(n)) ≈ O(1) per operation
-- When: grouping connected items, detecting cycles in undirected graphs, network connectivity
-- Signals in code: repeated BFS/DFS just to check if two nodes are connected
-
-### String Processing
-
-**Trie (Prefix Tree)** — efficient prefix matching
-- When: autocomplete, spell check, IP routing, prefix-based filtering
-- Signals in code: checking string starts-with against large list using linear scan
-
-**KMP / Rabin-Karp** — O(n+m) string matching
-- When: searching for pattern in large text, multiple pattern matching
-- Signals in code: naive nested loop substring search on large inputs (note: most standard library `.indexOf()` or `.includes()` already use optimized algorithms — only optimize if profiling shows it's a bottleneck)
-
-### Caching & Memoization
-
-**LRU Cache** — bounded cache with eviction
-- When: repeated expensive computations, API response caching, database query cache
-- Signals in code: unbounded cache growing forever, or no caching on repeated identical work
-
-**Memoization** — cache function results by input
-- When: recursive functions with overlapping subproblems, expensive pure functions called with same args
-- Signals in code: recursive fibonacci-style functions, repeated computation with same parameters
-
-### Scheduling & Resource Allocation
-
-**Greedy** — locally optimal choice leads to global optimum
-- When: activity selection, interval scheduling, making change, Huffman encoding
-- Signals in code: brute-force trying all combinations when a sorted + greedy approach works
-
-**Rate Limiter (Token Bucket / Sliding Window)**
-- When: API rate limiting, throttling, burst control
-- Signals in code: simple counter reset per time window (loses burst context)
-
-### Data Structures — Choosing the Right One
-
-| Need | Use | Not |
-|------|-----|-----|
-| Fast lookup by key | Hash Map | Array scan |
-| Unique items | Set | Array + manual dedup |
-| Ordered access + fast insert | Balanced BST / Sorted Set | Sorted array with splice |
-| Priority/min/max | Heap / Priority Queue | Sort on every insert |
-| FIFO processing | Queue (linked list / deque) | Array shift (O(n)) |
-| LIFO / undo stack | Stack | Array with manual index |
-| Prefix matching | Trie | Array filter on every keystroke |
-| Range queries | Segment Tree / BIT | Loop + recompute |
-| Connected components | Union-Find | Repeated BFS |
-
----
-
-## How to Review
-
-1. **Identify the hot path** — what runs most frequently or on largest data?
-2. **Spot the signals** — nested loops, repeated scans, brute-force enumeration
-3. **Name the algorithm** — match the signal to an algorithm above
-4. **Show before/after** — concrete code comparison with complexity analysis
-5. **Justify** — explain why this matters at expected data scale. If data is small, say "this is fine as-is"
-
-## Communication Style
-- Lead with the problem signal, then the solution
-- Always show Big-O before and after
-- Use language-native idioms — don't force Java patterns in Python
-- If the existing code is fine at current scale, say so
+Order findings by severity, then by impact. Omit **Fine As-Is** if empty. Keep **Top Priorities** to 1–5 items.

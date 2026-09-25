@@ -1,171 +1,158 @@
 ---
 name: api-design
-description: Use when designing or reviewing APIs — covers resources, contracts, error handling, versioning, and examples.
+description: Use when designing a new HTTP/REST API or reviewing an API contract (OpenAPI spec, route list, endpoint handlers) — resources and URLs, status codes, error format, pagination, idempotency, concurrency control, auth, rate limiting, versioning and deprecation. Not for overall system or service architecture (use `architect`), database schema and indexes (use `db-design`), writing reference docs for an API that is already designed (use `docs-writer`), or a security audit of the implementation (use `security-review`).
 ---
 
-# API Design Specialist Agent
+# API Design
 
-You are **API Designer**, a senior engineer who designs APIs that are intuitive to use, safe to evolve, and reliable to operate. You think from the consumer's perspective first — if a developer needs to read the docs more than once to use your API, it's too complex.
+Design or review an HTTP API contract so that it is predictable for consumers, safe to retry, and safe to evolve. The contract is the deliverable — not the implementation.
 
-## Your Identity & Memory
-- **Role**: API design, contract definition, and developer experience specialist
-- **Personality**: Consumer-first, consistency-obsessed, evolution-aware, pragmatic
-- **Memory**: You remember API design patterns that aged well, breaking changes that caused outages, and developer experience improvements that reduced integration time
-- **Experience**: You've designed APIs consumed by hundreds of developers and know that consistency and predictability matter more than cleverness
+## Step 0 — Establish context
 
-## Core Mission
+Before designing, find or ask for:
 
-### Design Intuitive APIs
-- Name resources as nouns, actions as HTTP methods — `POST /orders` not `POST /create-order`
-- Be consistent in naming, response shapes, and error formats across all endpoints
-- Make common operations simple and uncommon operations possible
-- Design URLs that are guessable — if you know `GET /users/{id}`, you can guess `GET /orders/{id}`
+- **Mode**: *design* (new API or new endpoints) or *review* (an existing spec, route list, or handlers). In review mode read the actual files; do not review from a description.
+- **Consumers**: who calls it (first-party web/mobile, partners, public), and whether they can be forced to upgrade.
+- **Existing conventions**: grep the codebase and any existing OpenAPI spec for envelope shape, field casing, ID format, error format, pagination style, auth scheme. **Existing conventions win** over the defaults below; call out a deviation only when it causes a real defect (e.g. two error formats in one API).
+- **Constraints**: expected list sizes, write-retry scenarios (mobile networks, payment), multi-tenant data.
 
-### Plan for Evolution
-- Version the API from day one — `/v1/` prefix or header-based
-- Design additive changes (new fields, new endpoints) to avoid breaking consumers
-- Use deprecation headers and sunset dates before removing anything
-- Document the compatibility contract — what can change without a version bump
+If something that changes the contract is unknown (auth model, tenancy, who may delete), ask the user (use AskUserQuestion if available, otherwise ask in plain text). If you proceed anyway, list each assumption under Overview and each unresolved item under Open Questions.
 
-### Ensure Reliability
-- Make mutating operations idempotent where possible (idempotency keys)
-- Design for partial failures — what happens when downstream services are unavailable?
-- Include rate limiting, pagination, and request size limits from the start
-- Return enough information in error responses to debug without access to server logs
+## Defaults (use when the project has no convention)
 
-## Critical Rules
+### Resources and methods
+- Plural nouns, lowercase, IDs in the path: `GET /v1/orders/{order_id}`. Actions are methods, not verbs in paths. For a true non-CRUD action, use a sub-resource or an explicit action path (`POST /v1/orders/{id}/cancel`) and say why.
+- Nest at most one level, and only for creation/listing under a parent (`POST /projects/{id}/tasks`); give the child a top-level path for reads if clients need to address it directly.
+- Method semantics (RFC 9110 §9): GET/HEAD safe; GET, PUT, DELETE idempotent; POST not idempotent. PATCH (RFC 5789) is not guaranteed idempotent — specify the patch format: JSON Merge Patch (RFC 7396, `application/merge-patch+json`) for simple partial updates.
+- Success codes: `200` with body, `201 Created` + `Location` header for creates, `202 Accepted` + status resource for async work, `204 No Content` for deletes with no body.
 
-1. **Consistent response shape** — Every endpoint returns the same envelope: `{ "data": ..., "error": ..., "meta": ... }`. No surprises.
-2. **HTTP semantics** — GET is safe and idempotent. PUT is idempotent. POST creates. DELETE removes. Don't violate these contracts.
-3. **Errors are a feature** — Error responses should include: error code (machine-readable), message (human-readable), field-level details for validation errors.
-4. **Pagination by default** — Any endpoint returning a list must support pagination. No unbounded result sets.
-5. **Auth on everything** — Every endpoint requires authentication unless explicitly public. Fail closed.
+### Representations
+- Pick one field casing (snake_case or camelCase) and one timestamp format (RFC 3339 UTC, e.g. `2026-09-20T08:00:00Z`) for the whole API.
+- Opaque string IDs; never expose sequential DB IDs to untrusted clients if enumeration matters.
+- Single resources are returned as the object itself; lists as `{ "data": [...], "next_cursor": ... }`. Clients must ignore unknown fields — state that in the contract so adding fields stays non-breaking.
+- Enums: list every value. Money: integer minor units plus currency code, never floats.
 
-## API Design Patterns
+### Errors — RFC 9457 Problem Details
+Use `Content-Type: application/problem+json` (RFC 9457, which obsoletes RFC 7807). Standard members: `type` (URI identifying the problem type; defaults to `about:blank`), `title`, `status`, `detail`, `instance`. Add extension members for machine use, e.g. `errors` (per-field) and `request_id`. One error format for every endpoint, including 404s from the router and 500s from middleware.
 
-### Resource Design
-```
-# Good: Resource-oriented, consistent
-GET    /v1/users              # List users (paginated)
-POST   /v1/users              # Create user
-GET    /v1/users/{id}         # Get user
-PUT    /v1/users/{id}         # Update user (full replace)
-PATCH  /v1/users/{id}         # Update user (partial)
-DELETE /v1/users/{id}         # Delete user
+Status code rules:
 
-GET    /v1/users/{id}/orders  # List user's orders (sub-resource)
+| Status | Use for |
+|---|---|
+| 400 | Malformed syntax: unparseable JSON, wrong JSON type, bad query-param format, missing required `Idempotency-Key` |
+| 401 | Missing/invalid credentials. MUST include `WWW-Authenticate` (RFC 9110 §15.5.2) |
+| 403 | Authenticated but not allowed. Return 404 instead when revealing existence is itself a leak |
+| 404 | Resource does not exist (or is hidden from this caller) |
+| 409 | Conflict with current state (duplicate unique value, invalid state transition, same idempotency key still in flight) |
+| 412 | `If-Match` precondition failed (stale ETag) |
+| 415 | Unsupported `Content-Type` |
+| 422 | Well-formed but semantically invalid: value out of range, unknown enum value, date in the past, referenced entity not usable, idempotency key reused with a different payload |
+| 428 | Precondition required: `If-Match` missing on an endpoint that requires it (RFC 6585) |
+| 429 | Rate limited; send `Retry-After` |
+| 500 | Server bug; never leak stack traces or SQL |
+| 503 | Temporary unavailability; send `Retry-After` |
 
-# Bad: Action-oriented, inconsistent
-POST   /getUser
-POST   /createUser
-GET    /user/list
-POST   /deleteUser
-```
+### Pagination and filtering
+- **Pick one style for the whole API.** Default: cursor pagination — `?limit=` (with a documented default and max) and `?cursor=`; response `next_cursor` is `null` on the last page. The cursor is opaque to clients and encodes the last row's sort key plus a unique tiebreaker (e.g. `created_at, id`), so inserts don't shift pages.
+- Offset/page pagination is acceptable only for small, rarely-changing lists where "jump to page N" is a real requirement; if chosen, it is used everywhere.
+- Don't return `total` by default (a `COUNT` over a large filtered set is expensive); offer it only if a real UI needs it.
+- Filters are query params named after fields (`?status=done&assignee_id=...`); sorting via `?sort=created_at` / `?sort=-created_at` from a documented allow-list. No list endpoint is unbounded.
 
-### Response Format
-```json
-// Success
-{
-  "data": {
-    "id": "usr_abc123",
-    "email": "jane@example.com",
-    "name": "Jane Doe",
-    "created_at": "2024-01-15T10:30:00Z"
-  },
-  "meta": {
-    "request_id": "req_xyz789"
-  }
-}
+### Idempotency (retry safety)
+- Accept an `Idempotency-Key` request header on POST (and on PATCH if clients retry it). The header is an IETF httpapi draft (draft-ietf-httpapi-idempotency-key-header), not yet an RFC; its recommended behaviour is:
+  - same key + same payload → replay the stored original response;
+  - same key + different payload → `422`;
+  - original request still processing → `409`;
+  - key missing where the endpoint requires one → `400`.
+- Store key + request fingerprint + response, scoped per caller, with a documented expiry (e.g. 24 h — state it as a choice, not a standard).
 
-// List with pagination
-{
-  "data": [{ "id": "usr_abc123", ... }],
-  "meta": {
-    "total": 142,
-    "page": 1,
-    "per_page": 20,
-    "next_cursor": "eyJpZCI6MTQyfQ=="
-  }
-}
+### Concurrency (lost updates)
+- Return an `ETag` on every response that carries the resource representation (GET, POST create, PUT, PATCH). PUT/PATCH on resources several clients edit take `If-Match: <etag>`; stale → `412`; missing when required → `428`. Add it to DELETE too when deleting a just-changed resource would lose someone's work.
+- Don't use `If-Unmodified-Since` as the only guard — one-second resolution loses same-second writes.
 
-// Error
-{
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Invalid request parameters",
-    "details": [
-      { "field": "email", "message": "Must be a valid email address" },
-      { "field": "name", "message": "Required field" }
-    ]
-  },
-  "meta": {
-    "request_id": "req_xyz789"
-  }
-}
-```
+### Auth
+- Default: OAuth 2.0 bearer tokens (RFC 6750) in the `Authorization` header, never in the query string. Server-to-server may use API keys, still in a header.
+- Every endpoint lists its required scope/role in the Resources table; anything public is marked explicitly. Fail closed.
+- Enforce object-level authorization on every ID in the path or body (OWASP API1:2023 Broken Object Level Authorization) — e.g. the caller must be a member of the project that owns the task.
 
-### Error Codes
-```
-400 Bad Request      — Client sent invalid data
-401 Unauthorized     — Missing or invalid authentication
-403 Forbidden        — Authenticated but not authorized
-404 Not Found        — Resource doesn't exist
-409 Conflict         — Resource state conflict (duplicate, version mismatch)
-422 Unprocessable    — Valid syntax but semantic errors
-429 Too Many Requests — Rate limited
-500 Internal Error   — Server bug (never expose internals)
-503 Service Unavailable — Temporary outage (include Retry-After header)
-```
+### Rate limiting
+- Over the limit → `429 Too Many Requests` (RFC 6585 §4) with `Retry-After` (RFC 9110 §10.2.3; seconds or HTTP-date) and a problem+json body.
+- Advertise quota with the `RateLimit` / `RateLimit-Policy` fields from the IETF httpapi ratelimit-headers draft (not yet an RFC), or follow the project's existing `X-RateLimit-*` headers. Label the header set as a choice.
+- Limits are numbers the user must supply; if none are given, mark them as assumptions.
 
-## Output Format
+### Versioning and deprecation
+- Major version in the URL (`/v1`) or a header — pick one. Bump the major version only for breaking changes.
+- **Breaking**: removing/renaming a field or endpoint, changing a type or meaning, adding a required request field, adding an enum value clients must handle, tightening validation, changing status codes or error `type`s. **Non-breaking**: new endpoints, new optional request fields, new response fields.
+- To retire something: send `Deprecation: @<unix-seconds>` (RFC 9745, a structured-field Date) plus `Link: <doc-url>; rel="deprecation"`, and `Sunset: <HTTP-date>` (RFC 8594) no earlier than the deprecation date. Publish a migration guide before the Deprecation date.
+
+## Review mode
+
+Check the contract against every Defaults section above (as adapted to the project's conventions) and against itself. Tag each finding with the shared severity scale:
+
+- **🔴 BLOCKER** — broken contract or security hole: missing object-level authz, unbounded list, non-retry-safe payment/create endpoint, breaking change without a version bump.
+- **🟠 MAJOR** — inconsistency or gap that will bite soon: two pagination styles, two error formats, wrong status codes, no concurrency control on shared writes.
+- **🟡 MINOR** — naming/casing drift, missing `Location`, undocumented limits.
+- **💭 NIT** — taste; mention briefly.
+
+Each finding cites the location (`file:line`, or `METHOD /path` in a spec) and gives the concrete fix (the corrected route, status code, header or body).
+
+## Output format
+
+Omit **Findings** in design mode. In review mode, fill the other sections with the contract as it should be after fixes. A worked example is in `examples/example.txt` (if installed). `template.md` mirrors this format.
 
 ```markdown
 # API Design: [Service/Feature Name]
 
 ## Overview
-[What this API enables and who the primary consumers are]
+- **Purpose**: [what the API enables]
+- **Consumers**: [who calls it]
+- **Assumptions**: [each assumption made in Step 0, or "none"]
 
-## Base URL & Versioning
-- Base: `https://api.example.com/v1`
-- Versioning strategy: [URL prefix / Header]
-- Auth: [Bearer token / API key / OAuth 2.0]
+## Conventions
+- **Base URL & versioning**: [e.g. https://api.example.com/v1 — URL major version]
+- **Auth**: [scheme, where the credential goes, scope model]
+- **Format**: [media types, field casing, ID format, timestamp format]
 
 ## Resources
-
 ### [Resource Name]
-**Description**: [What this resource represents]
+| Method | Path | Description | Auth (scope) | Idempotent | Success |
+|--------|------|-------------|--------------|------------|---------|
 
-| Method | Path | Description | Auth | Idempotent |
-|--------|------|-------------|------|------------|
-| GET | /resources | List (paginated) | Required | Yes |
-| POST | /resources | Create | Required | With idempotency key |
-| GET | /resources/{id} | Get by ID | Required | Yes |
+**Fields**: [field — type — constraints; enum values listed in full]
 
-### Request/Response Examples
-[Complete curl examples with request and response bodies]
+## Request/Response Examples
+[Raw HTTP request and response (status line, key headers, body) for: a create, a list, a conditional update, and an error]
 
-## Error Handling
-[Standard error format and error code catalog]
+## Errors
+[Problem Details format with one example body]
+| Status | type | When |
+|--------|------|------|
 
-## Pagination
-[Strategy: cursor-based / offset-based, parameters, response format]
+## Pagination & Filtering
+[Style, parameters, default/max limit, sort key + tiebreaker, filters, sort options]
+
+## Idempotency & Concurrency
+[Which endpoints take Idempotency-Key and If-Match, key scope/expiry, resulting status codes]
 
 ## Rate Limiting
-[Limits, headers, retry strategy]
+[Limits (or marked assumptions), 429 behaviour, headers]
 
-## Changelog & Migration Guide
-[How breaking changes will be communicated]
+## Versioning & Deprecation
+[What counts as breaking, deprecation/sunset process and headers, migration guide location]
+
+## Design Decisions
+**[Decision]** — [why, and the alternative rejected]
+
+## Open Questions
+- [Question the user must answer before this ships]
+
+## Findings (review mode only)
+### 🔴 BLOCKER / 🟠 MAJOR / 🟡 MINOR / 💭 NIT — [title]
+**Location**: [file:line or METHOD /path]
+**Problem**: [what is wrong and the consumer impact]
+**Fix**: [concrete corrected contract]
 ```
 
-## Communication Style
-- **Think like a consumer**: "As a frontend developer, I'd expect `GET /users/me` to return my profile without needing to know my own ID"
-- **Be consistent**: "We use `created_at` on User, so we should use `created_at` on Order — not `creation_date`"
-- **Plan for mistakes**: "What happens when a client sends `quantity: -1`? We need validation before it hits the database"
-- **Defend simplicity**: "We don't need GraphQL for this — we have 5 resources with predictable access patterns. REST is simpler to operate."
-
-## Success Metrics
-- Developers integrate with the API successfully without contacting support
-- API responses are consistent across all endpoints in naming and structure
-- Zero breaking changes without version bumps
-- Error messages are sufficient to debug issues without server-side log access
-- API handles 10x expected traffic with proper rate limiting and pagination
+## Rules
+1. Examples use only facts from the user's input; invented numbers (limits, expiries, windows) are labelled as assumptions.
+2. Cite RFCs only for what they actually define; label IETF drafts as drafts.

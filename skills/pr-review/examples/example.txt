@@ -1,121 +1,210 @@
 # Example: /pr-review
 
 ## User Input
-Review this PR. It adds rate limiting to our API endpoints.
+Review this PR before I merge it.
 
 PR title: "Add rate limiting to API"
-PR description: "Adds rate limiting using Redis. Limits to 100 requests per minute per API key."
+PR description: "Adds Redis-backed rate limiting: 100 requests per minute per API key, applied to all /api routes."
+CI: lint and unit tests passing.
+Stack: Node 22, Express 4, ioredis 5. config/redis.js is also imported by the session store and the cache module.
 
-Changed files:
-- middleware/rate-limit.js (new, 45 lines)
-- routes/api.js (modified, added middleware)
-- config/redis.js (modified, added rate limit config)
-- tests/rate-limit.test.js (new, 30 lines)
+Changed files: 4 files, +33 −1
+- middleware/rate-limit.js   (new, +21)
+- routes/api.js              (+2)
+- config/redis.js            (+1 −1)
+- tests/rate-limit.test.js   (new, +9)
+
+--- middleware/rate-limit.js (new file)
+ 1  const redis = require('../config/redis');
+ 2
+ 3  const LIMIT = 100;
+ 4  const WINDOW_SECONDS = 60;
+ 5
+ 6  module.exports = async function rateLimit(req, res, next) {
+ 7    const key = `ratelimit:${req.get('X-API-Key')}`;
+ 8
+ 9    const current = await redis.incr(key).catch(() => null);
+10    if (current === null) return next(); // Redis down: let the request through
+11
+12    if (current === 1) {
+13      await redis.expire(key, WINDOW_SECONDS);
+14    }
+15
+16    if (current > LIMIT) {
+17      return res.status(429).json({ error: { code: 'RATE_LIMIT_EXCEEDED' } });
+18    }
+19
+20    next();
+21  };
+
+--- routes/api.js (after change; + marks added lines)
+ 1   const express = require('express');
+ 2   const requireApiKey = require('../middleware/require-api-key');
+ 3 + const rateLimit = require('../middleware/rate-limit');
+ 4   const { getData } = require('../controllers/data');
+ 5   const router = express.Router();
+ 6
+ 7   router.use(requireApiKey);
+ 8 + router.use(rateLimit);
+ 9   router.get('/data', getData);
+10
+11   module.exports = router;
+
+--- config/redis.js
+ 1   const Redis = require('ioredis');
+ 2 - module.exports = new Redis(process.env.REDIS_URL);
+ 2 + module.exports = new Redis(process.env.REDIS_URL, { enableOfflineQueue: false });
+
+--- tests/rate-limit.test.js (new file)
+ 1  const request = require('supertest');
+ 2  const app = require('../app');
+ 3
+ 4  describe('rate limit', () => {
+ 5    it('allows a request under the limit', async () => {
+ 6      const res = await request(app).get('/api/data').set('X-API-Key', 'test-key');
+ 7      expect(res.status).toBe(200);
+ 8    });
+ 9  });
 
 ## Skill Output
 
 # PR Review: Add rate limiting to API
 
+**Source**: pasted diff · **CI**: passing (lint, unit tests)
+
 ## Summary
-Good, focused PR that adds a needed security/reliability feature. The implementation
-is clean and the tests cover the happy path. Two blockers: the Redis failure behavior
-and missing test for the limit-exceeded case. Several smaller improvements worth addressing.
+Adds a Redis-backed limiter of 100 requests/minute per API key to every /api route. The
+scope is right, but a Redis error on EXPIRE crashes the Node process, the PR quietly changes
+the Redis client shared with sessions and cache, and the only test passes even when the
+limiter does nothing. REQUEST CHANGES.
 
 ## Change Analysis
-- **Scope**: ✅ Focused — rate limiting only, no unrelated changes
-- **Size**: ✅ 75 meaningful lines across 4 files — fully reviewable
-- **Risk**: 🟡 Medium — if Redis is unavailable, behavior unclear (see blocker #1)
-- **Reversibility**: ✅ Middleware can be disabled via config flag
+- **Scope**: Focused on rate limiting, except the shared-client change in config/redis.js (finding 2)
+- **Size**: 4 files, +33 −1, all meaningful — reviewable
+- **Hidden changes**: config/redis.js:2 changes connection behavior for every importer (session store, cache)
+- **Risk**: High — runs on every /api request, a Redis error can crash the process, and the shared Redis client changes
+- **Reversibility**: Revert-safe — no schema or persisted data; leftover `ratelimit:*` keys are unused after a revert
+- **Description**: Missing Redis-failure behavior, the shared-client change, how it was tested, and rollback
 
 ## Findings
 
-### 🔴 Blocker: Redis failure behavior undefined
-**Location**: middleware/rate-limit.js, line 23
-**Problem**: When Redis is unavailable, the middleware calls `next()` with no error
-handling — meaning ALL requests pass through with no rate limiting. For a security
-feature, failing open is dangerous. A Redis outage becomes a rate limit bypass.
-
-**Current**:
+### 🔴 BLOCKER
+#### 1. A Redis error on EXPIRE crashes the process — `middleware/rate-limit.js:13` [verified]
+**Problem**: Express 4 ignores the promise returned by async middleware. If `redis.expire`
+rejects (for example, the connection drops after INCR), the rejection is unhandled, and Node 22
+exits on unhandled rejections by default. Reproduced: the app with EXPIRE stubbed to reject exited
+with code 1 on the first request. Even without a crash, a failure between INCR (line 9) and EXPIRE
+(line 13) leaves the key with no TTL, so once that key passes 100 it gets 429 forever.
+Don't fix this with `.catch((err) => next(err))` on line 9: the function would carry on with
+`current === undefined` and call `next()` a second time.
+**Fix**: do INCR+EXPIRE in one atomic script and handle the error in one place:
 ```javascript
-const current = await redis.incr(key).catch(() => null);
-if (current === null) return next(); // fail open!
-```
+const INCR_WITH_TTL = `
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+return current`;
 
-**Fix**:
-```javascript
-const current = await redis.incr(key).catch((err) => {
-  logger.error('Rate limit Redis error:', err);
-  // Fail closed for security, or fail open with monitoring
-  // Decision needed: which behavior is correct for this service?
-  return next(new ServiceUnavailableError('Rate limit service unavailable'));
-});
-```
-⚠️ **Team decision needed**: fail open (availability) vs fail closed (security). Document the choice.
+module.exports = async function rateLimit(req, res, next) {
+  const key = `ratelimit:${req.get('X-API-Key')}`;
 
-### 🔴 Blocker: Missing test — rate limit exceeded scenario
-**Location**: tests/rate-limit.test.js
-**Problem**: Tests verify that requests under the limit succeed (30 tests), but there
-is **no test** verifying that the 101st request is rejected with 429. This is the
-core behavior of rate limiting.
-
-**Missing test**:
-```javascript
-it('returns 429 after limit exceeded', async () => {
-  const key = 'test-api-key';
-  // Exhaust the limit
-  for (let i = 0; i < 100; i++) {
-    await request(app).get('/api/data').set('X-API-Key', key);
+  let current;
+  try {
+    current = await redis.eval(INCR_WITH_TTL, 1, key, WINDOW_SECONDS);
+  } catch (err) {
+    console.error('rate-limit: Redis error, request not limited', err); // use the project's logger
+    return next(); // fail open; to fail closed, respond with res.status(503) instead (see Question 1)
   }
-  // 101st should be rejected
-  const response = await request(app).get('/api/data').set('X-API-Key', key);
-  expect(response.status).toBe(429);
-  expect(response.headers['retry-after']).toBeDefined();
-  expect(response.body.error.code).toBe('RATE_LIMIT_EXCEEDED');
+
+  if (current > LIMIT) {
+    res.set('Retry-After', String(WINDOW_SECONDS));
+    return res.status(429).json({ error: { code: 'RATE_LIMIT_EXCEEDED' } });
+  }
+  return next();
+};
+```
+Verified: every path calls `next()` or sends a response exactly once. With Redis failing,
+the request gets 200 and the process stays up. The tests in finding 4 pass once findings 1 and 2
+are both fixed.
+
+### 🟠 MAJOR
+#### 2. Undisclosed change to the shared Redis client — `config/redis.js:2` [verified]
+**Problem**: `enableOfflineQueue: false` makes every command sent while the client is
+connecting or reconnecting reject immediately ("Stream isn't writeable and enableOfflineQueue
+options is false") instead of waiting. Reproduced: with this option, an INCR sent right after
+`new Redis(...)` rejected with that error; with the default client it was queued and succeeded. This client is also used by the session store and the
+cache, so their behavior during startup and Redis reconnects changes. The description doesn't
+mention this, and the diff doesn't show whether they handle the rejection. For the limiter
+itself, requests that arrive before the connection is ready are not rate limited (line 10).
+**Fix**: Revert line 2. If the limiter needs to fail fast, give it its own client
+(`new Redis(process.env.REDIS_URL, { enableOfflineQueue: false })` in the limiter module) and
+leave the shared client unchanged.
+
+#### 3. A Redis outage silently turns rate limiting off — `middleware/rate-limit.js:9-10`
+**Problem**: Any Redis error lets the request through with no log or metric. A Redis outage
+removes rate limiting with nothing to show for it, and the fail-open choice is not documented.
+**Fix**: Log (or count) the failure, as in the fix for finding 1. Record the fail-open or
+fail-closed decision in the code comment and the PR description (Question 1).
+
+#### 4. The test doesn't exercise the limiter — `tests/rate-limit.test.js:5-8` [verified]
+**Problem**: The only test sends one request and expects 200. It still passes with Redis
+unreachable, which is the same as having no limiter. Nothing tests the 101st request, the
+429 body, or the Redis-failure path.
+**Fix** (add to the existing test file; passes with a real Redis once findings 1 and 2 are fixed —
+with `enableOfflineQueue: false` still set, `redis.del` in `beforeEach` rejects before the client is ready):
+```javascript
+const redis = require('../config/redis');
+
+beforeEach(() => redis.del('ratelimit:test-key'));
+afterAll(() => redis.quit());
+
+it('rejects the 101st request in a window with 429', async () => {
+  for (let i = 0; i < 100; i++) {
+    await request(app).get('/api/data').set('X-API-Key', 'test-key').expect(200);
+  }
+  const res = await request(app).get('/api/data').set('X-API-Key', 'test-key');
+  expect(res.status).toBe(429);
+  expect(res.headers['retry-after']).toBe('60');
+});
+
+it('lets the request through when Redis fails (fail-open policy)', async () => {
+  jest.spyOn(redis, 'eval').mockRejectedValueOnce(new Error('connection lost'));
+  const res = await request(app).get('/api/data').set('X-API-Key', 'test-key');
+  expect(res.status).toBe(200);
 });
 ```
 
-### 🟡 Suggestion: Add Retry-After header to 429 responses
-**Location**: middleware/rate-limit.js
-**Problem**: 429 response doesn't include `Retry-After` header. RFC 6585 requires it,
-and API clients need it to implement backoff correctly.
-```javascript
-res.set('Retry-After', Math.ceil(windowSeconds - (Date.now() / 1000 % windowSeconds)));
-res.status(429).json({ error: { code: 'RATE_LIMIT_EXCEEDED', ... } });
-```
+### 🟡 MINOR
+#### 5. 429 response has no Retry-After — `middleware/rate-limit.js:17`
+**Problem**: RFC 6585 §4 says a 429 response MAY include `Retry-After`. Without it, clients
+have to guess how long to back off.
+**Fix**: Covered by the fix for finding 1. `WINDOW_SECONDS` is an upper bound; send the key's
+remaining TTL if clients need the exact value.
 
-### 🟡 Suggestion: Rate limit by IP as fallback for unauthenticated requests
-**Location**: middleware/rate-limit.js, key generation
-**Problem**: Current key is `ratelimit:${apiKey}`. If request has no API key,
-key becomes `ratelimit:undefined` — all unauthenticated requests share one bucket.
-**Fix**: `const key = apiKey ? \`ratelimit:${apiKey}\` : \`ratelimit:ip:${req.ip}\``;
+#### 6. The description leaves out what a reviewer needs — (PR-wide)
+**Problem**: It says what the limit is, but not what happens when Redis fails, that the shared
+client changed, how it was tested, or how to roll back.
+**Fix**: Add those four points. Rollback is simply reverting the PR.
 
-### 💭 Nit: Magic numbers should be constants
-**Location**: middleware/rate-limit.js, lines 8, 12
-```javascript
-// Before
-if (current > 100) { ... }
-const ttl = 60;
+## Missing from the PR
+- [ ] Tests for the 429 path and the Redis-failure path (finding 4)
+- [ ] Description of the failure policy and the config/redis.js change (findings 2, 6)
 
-// After
-const RATE_LIMIT_MAX = config.rateLimit.maxRequests;  // 100
-const RATE_LIMIT_WINDOW_SECONDS = config.rateLimit.windowSeconds;  // 60
-```
+## Questions for the Author
+1. When Redis is unavailable, should API requests go through unlimited (fail open) or be rejected (fail closed)?
+2. Do any existing API keys send more than 100 requests per minute today? From the moment this deploys, every /api request is limited.
+3. Was the `enableOfflineQueue: false` change meant to apply to the session store and the cache?
 
 ## What's Good
-- Clean middleware pattern — easy to apply to specific routes or globally
-- Redis key includes API key → correct per-client isolation
-- Config externalized to `config/redis.js` — makes it environment-configurable
-- Tests use a real Redis test instance (not mocked) — tests actual behavior
+- The limiter is mounted after `requireApiKey` (`routes/api.js:7-8`), so requests are counted only after the key check runs.
+- The limit and window are named constants (`middleware/rate-limit.js:3-4`), not literals inside the logic.
+- The change is small and has one purpose, so it's easy to review and revert.
 
 ## Verdict
-**REQUEST CHANGES** — Two blockers must be addressed before merge:
-1. Define and implement Redis failure behavior
-2. Add test for rate limit exceeded (429) case
-
-After those are fixed, this is ready to merge.
+**REQUEST CHANGES** — BLOCKER 1 can crash the process on a Redis error, and MAJORs 2–4 have not been deferred.
 
 ## Merge Checklist
-- [ ] Redis failure behavior decided and implemented
-- [ ] 429 test added and passing
-- [ ] Retry-After header added (recommended)
-- [ ] CI passing
+- [x] CI passing
+- [ ] All BLOCKER and MAJOR findings fixed or explicitly deferred to a tracked follow-up
+- [ ] Tests fail without the change and pass with it
+- [ ] Description covers what, why, testing, risk, rollback
+- [ ] Rollout and rollback confirmed (migrations, config, flags), if applicable

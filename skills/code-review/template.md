@@ -1,25 +1,38 @@
-# Code Review Template
+# Code Review — [file / function / change]
+
+**Blast radius:** [CRITICAL / HIGH / MEDIUM / LOW] — [one-line reason]
+**Findings:** 🔴 [n] · 🟠 [n] · 🟡 [n] · 💭 [n]
+**Verdict:** [REQUEST CHANGES / NEEDS DISCUSSION / APPROVE WITH COMMENTS / APPROVE]
 
 ## Summary
-[Overall impression, key concerns, what's good]
+[2–4 sentences: what the code does, the most important problem, why this verdict.]
 
 ## Findings
 
-### 🔴 Blocker: [Title]
-**Location**: [file:line]
-**Problem**: [Description]
-**Risk**: [What could go wrong]
-**Fix**: [Suggested change]
+### 🔴 BLOCKER
+#### [B1] [Short title] [verified]
+**Location:** `path/file.ext:L10-L12`
+**Problem:** [Concrete failure: input → outcome]
+**Risk:** [What happens in production]
+**Fix:**
+```[lang]
+[minimal snippet]
+```
 
-### 🟡 Suggestion: [Title]
-**Location**: [file:line]
-**Suggestion**: [What to improve]
+### 🟠 MAJOR
+[Same fields as BLOCKER, IDs M1, M2…]
 
-### 💭 Nit: [Title]
-**Note**: [Minor observation]
+### 🟡 MINOR
+[Same fields; Fix may be one line. IDs m1, m2…]
 
-## What's Good
-- [Positive observation]
+### 💭 NIT
+- `path/file.ext:L5` — [one line]
 
-## Verdict
-[APPROVE / REQUEST CHANGES]
+## Questions
+- [Question for the author, and which finding or verdict it could change]
+
+## Checked OK
+- [Dimension]: [why it's fine]
+
+## What's good
+- [Specific strength worth keeping]

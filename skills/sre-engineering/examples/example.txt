@@ -1,4 +1,4 @@
-# Example: /incident-triage
+# Example: /sre-engineering (Mode A — incident response)
 
 ## User Input
 Our payment processing is failing. Orders are being placed but payments aren't
@@ -8,102 +8,63 @@ going through. Started about 20 minutes ago. Error rate on /api/checkout is at
 
 ## Skill Output
 
-# Incident Report: Payment Processing Failures
+# Incident Report: Checkout payments failing during Black Friday traffic
 
-## Status: INVESTIGATING
-**Severity**: SEV-1 — Revenue-critical, 45% checkout failure rate
-**Started**: ~20 minutes ago (approx 14:10 UTC)
-**Duration**: 20 minutes ongoing
-**Commander**: [Assign immediately]
+**Status**: INVESTIGATING
+**Severity**: SEV-1 — the checkout/payment journey is failing for 45% of /api/checkout requests at peak campaign traffic
+**Started**: ~20 minutes before this report (exact time unknown — confirm from metrics)
+**Incident commander**: unassigned — assign now
+**Next update**: in 15 minutes (SEV-1 cadence)
 
 ## Impact
-- **Users affected**: ~45% of checkout attempts failing
-- **Revenue impact**: ~$8,400/minute at 4x traffic (est. based on normal $2,100/min)
-- **Services affected**: /api/checkout, payment-service, order-service
-- **Blast radius**: Growing — 4x traffic means more users hitting failures
-
-## Immediate Actions (Do Now)
-
-1. **Check payment gateway status page** — Stripe/PayPal/etc. has a public status page.
-   If they're down, that's the root cause. ETA: 2 minutes.
-
-2. **Check payment-service error logs**:
-   ```bash
-   kubectl logs -l app=payment-service --since=30m | grep -E "ERROR|TIMEOUT|refused"
-   ```
-
-3. **Check DB connection pool**:
-   ```bash
-   # High traffic can exhaust connection pools silently
-   kubectl exec -it payment-service-xxx -- env | grep DB_POOL
-   # Check pg_stat_activity for connection count
-   psql -c "SELECT count(*) FROM pg_stat_activity WHERE datname = 'payments';"
-   ```
-
-4. **Check payment-service health endpoint**:
-   ```bash
-   curl https://internal.api/payment-service/health
-   ```
+- **Users affected**: ~45% of /api/checkout requests fail; number of customers unknown — ask
+- **Services affected**: /api/checkout; payment processing; order status (orders stuck in "payment pending")
+- **Business impact**: payments failing during the Black Friday campaign at 4x normal traffic; revenue figure unknown — ask
+- **Data integrity risk**: orders are created but stay "payment pending"; unknown whether any of these customers were actually charged. Retrying or cancelling them in bulk before that is known could double-charge or drop paid orders
+- **Trend**: unknown — ask (only one reading, 45%, was given)
 
 ## Timeline
-
-| Time (UTC) | Event |
-|------------|-------|
-| 12:00 | Black Friday campaign launched, traffic ramp begins |
-| 14:10 | First payment failure alerts fire (error rate > 5%) |
-| 14:20 | Error rate climbs to 45%, SEV-1 declared |
-| 14:30 | Investigation started (this report) |
+| Time | Event | Source |
+|------|-------|--------|
+| ~T−120 min | Black Friday campaign started; traffic rose to 4x normal | user report |
+| ~T−20 min | Payment failures began | user report |
+| T (report) | /api/checkout error rate 45%; some orders stuck "payment pending"; no recent deploys | user report |
 
 ## Hypotheses
+| # | Hypothesis | Status | Evidence for / against | Next check | Owner |
+|---|------------|--------|------------------------|------------|-------|
+| 1 | The payment dependency (external provider or internal payment service) is throttling, rejecting, or timing out under 4x load | Open | For: order creation succeeds while the payment step fails; traffic is 4x normal. Against: nothing in the report yet | Break down payment-call outcomes since T−30 min by response code / timeout; check the provider's status page and any quota or rate-limit responses | unassigned |
+| 2 | A resource in the payment path is saturated (connection pool, worker pool, queue) and requests hang | Open | For: 4x traffic; "payment pending forever" fits hung or timed-out calls; failures began ~100 min after the ramp, consistent with gradual saturation (assumption). Against: nothing in the report yet | Compare payment-path latency, pool utilisation, and queue depth now vs. before the campaign | unassigned |
+| 3 | A non-deploy change around T−20 min (config, feature flag, credential/certificate, provider-side change) | Open | For: onset does not line up with the campaign start 2 h earlier. Against: "no recent deploys" — but that rules out code only | Review config, flag, infra, and secret change logs for the last 3 h; ask the payment provider about changes | unassigned |
 
-| # | Hypothesis | Probability | Assignee | Validation |
-|---|-----------|-------------|----------|------------|
-| 1 | Payment gateway (Stripe) is experiencing issues | **High** | Dev A | Check stripe.com/status NOW |
-| 2 | DB connection pool exhausted under 4x load | **High** | Dev B | Check pg_stat_activity connection count |
-| 3 | payment-service OOM-killed or crashing under load | **High** | Dev C | `kubectl get pods -l app=payment-service` |
-| 4 | Rate limit hit on payment gateway API key | **Medium** | Dev A | Check Stripe dashboard for 429 errors |
-| 5 | Redis session store overwhelmed (checkout sessions expiring) | **Low** | Dev B | Check Redis memory and eviction metrics |
+## Mitigations
+| Option | Use if | Risk | Status |
+|--------|--------|------|--------|
+| Rate-limit or queue new checkouts at the edge so the payment path stays under its limit | H1 or H2 confirmed | Some customers are turned away or delayed instead of failing; needs an existing throttle mechanism — ask whether one exists | Proposed |
+| Add capacity to the saturated component in the payment path | H2 confirmed and the bottleneck is local | Won't help if the limit is the provider or a shared database; more connections can overload a shared database | Proposed |
+| Revert the change found in the change logs | H3 confirmed | Low if the change is cleanly reversible | Proposed |
+| Ask the campaign owner to pause further traffic drivers (emails, pushes, ads) | Load confirmed as the driver (H1 or H2) | Business cost; campaign owner decides | Proposed |
 
-## Mitigations Ready to Deploy
+## Next Actions
+- [ ] Assign an incident commander and open the incident channel — Owner: on-call — Due: now
+- [ ] Run the H1 check (payment-call outcomes by response code / timeout) — Owner: unassigned — Due: T+15 min
+- [ ] Run the H2 check (payment-path saturation vs. pre-campaign baseline) — Owner: unassigned — Due: T+15 min
+- [ ] Run the H3 check (change logs, last 3 h) — Owner: unassigned — Due: T+15 min
+- [ ] Export the list of "payment pending" orders since ~T−20 min (read-only); do not retry or cancel them until charge status is confirmed with the payment provider — Owner: unassigned — Due: T+30 min
+- [ ] Hold all non-essential changes to checkout and payment until the incident is resolved — Owner: incident commander — Due: now
 
-If **Hypothesis 1** (gateway down):
-- Enable "retry later" mode: accept orders, queue payment for retry when gateway recovers
-- ETA to enable: 5 minutes (feature flag exists: `PAYMENT_RETRY_MODE=true`)
+## Status Update (draft)
+> SEV-1: About 45% of checkout requests are failing and some orders are stuck in "payment pending". Started about 20 minutes ago, during Black Friday traffic at 4x normal. There were no recent deploys. Known: order creation works; the payment step fails. Not yet known: the cause, how many customers are affected, and whether pending orders were charged. Doing: on-call is running the three checks in parallel (payment dependency, payment-path saturation, recent non-deploy changes); mitigations are being prepared for approval. Next update in 15 minutes.
 
-If **Hypothesis 2** (DB pool exhausted):
-- Increase pool size: `DB_POOL_SIZE=50` (current: 20) — redeploy payment-service
-- ETA: 3 minutes
+## Open Questions
+- Is the error rate still climbing, flat, or falling? What was the exact onset time?
+- What errors does /api/checkout return (status codes, timeouts), and from which dependency?
+- Is payment processed by an external provider? Has it reported an incident or sent throttling responses?
+- For "payment pending" orders, does the provider show a charge?
+- Can the edge throttle or queue checkouts right now, and who can approve it?
+- Were there config, flag, secret, or infrastructure changes in the last 3 hours?
 
-If **Hypothesis 3** (pod crashing):
-- Scale up replicas: `kubectl scale deployment payment-service --replicas=10`
-- ETA: 2 minutes
-
-## Communication
-
-**14:30 UTC — Status page update**:
-> We are currently investigating payment processing delays. Some checkout attempts may
-> fail. Our team is actively working on a fix. We apologize for the inconvenience.
-
-**14:30 UTC — Internal Slack #incidents**:
-> SEV-1 ACTIVE: 45% payment failure rate. Commander: [Name]. War room: [link].
-> Dev A: Check Stripe status. Dev B: Check DB pool. Dev C: Check pod health.
-> Next update in 15 minutes.
-
-## Next Update: 14:45 UTC
-
----
-
-## [UPDATE — 14:38 UTC]
-
-**Root cause identified**: Stripe API returning 429 (rate limit) for all requests.
-4x traffic exceeded our Stripe account's API rate limit (1,000 req/min).
-
-**Mitigation applied**:
-1. Enabled `PAYMENT_RETRY_MODE=true` — orders queue for retry, users see "processing"
-2. Contacted Stripe to increase rate limit (ETA: 30-60 min)
-3. Added request queuing in payment-service to smooth out spikes
-
-**Error rate**: 45% → 8% (dropping as retry queue processes)
-**ETA to full recovery**: 20-30 minutes
-
-**Next update**: 14:55 UTC or when error rate reaches 0%
+## Follow-Up
+- [ ] Post-mortem scheduled (required for SEV-1/SEV-2)
+- [ ] Affected records identified and reconciled
+- [ ] Detection gap reviewed (did an alert fire before users noticed?)

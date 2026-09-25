@@ -1,92 +1,241 @@
 # Example: /architect
 
 ## User Input
-We're building a real-time notification system. Users need to receive notifications
-via web push, email, and in-app. We expect 5M users, peak 500k notifications/minute
-during marketing campaigns. Currently we have a monolith (Node.js + PostgreSQL).
-Need to design this as a new service.
+We need a notification system: web push, email, and in-app. Please design it as a new service.
+
+- 5M users.
+- Transactional notifications (order confirmations, password resets, mentions): steady ~3,000/min.
+  They must never be lost; an occasional duplicate is acceptable. Delivered within 1 minute.
+- Marketing campaigns: ~3 per week. Each targets up to 5M users, one notification per user,
+  generated at up to 500k notifications/min. Channel mix: 60% email, 30% web push, 10% in-app.
+  A campaign must be fully delivered within 30 minutes of start. A few failed campaign messages
+  are acceptable, but we must know how many.
+- In-app notifications live in the monolith's `notifications` table; the bell menu reads it on page
+  load. Showing a new one on the next page load is fine.
+- Stack: Node.js monolith on AWS ECS, PostgreSQL 15 on RDS (primary + 1 read replica), ElastiCache
+  Redis (used for sessions). Today every send is synchronous: SendGrid and web-push calls inside
+  request handlers, campaigns via a batch script. No message broker.
+- The primary DB peaks at ~3,000 writes/s at 45% CPU.
+- Team: 6 backend engineers, one on-call rotation, nobody has operated Kafka.
+- Marketing plans to double per-campaign volume within 12 months.
 
 ## Skill Output
 
-# Architecture Design: Notification Service
+# Architecture Design: Notification Delivery
 
-## Problem Statement
-Build a notification delivery system supporting web push, email, and in-app channels
-for 5M users at peak 500k notifications/minute. Non-goals: SMS support (v2), user
-preference management UI (separate service), notification analytics (separate service).
+## Requirements & Constraints
+- **Goal**: Deliver transactional and campaign notifications over email, web push and in-app without
+  blocking request handlers, within the SLOs below.
+- **Non-goals**: SMS; a preference-management UI; delivery analytics beyond the counters listed under
+  Observability.
+- **Load** (all from the input):
+  - Transactional: 3,000/min = 50/s steady.
+  - Campaign generation: 500k/min = 8,333/s; 5M / 500k = 10 min of generation per campaign.
+  - Campaign per channel: email 3M, push 1.5M, in-app 0.5M.
+- **Known growth**: per-campaign volume doubles to 10M within 12 months.
+- **SLOs**: transactional delivered < 60 s; campaign fully delivered < 30 min (1,800 s) from start;
+  in-app visible on next page load.
+- **Data loss tolerance**: transactional = must-not-lose, may-duplicate. Campaign = may-drop-if-counted.
+- **Constraints**: AWS, Node.js, PostgreSQL 15 on RDS, existing Redis; 6 engineers, one rotation,
+  no Kafka experience.
+- **Assumptions**: at most one campaign runs per day (3/week); per-task worker throughput is unknown
+  until the Phase 3 load test.
 
-## Architecture Overview
-**Pattern**: Event-driven microservice
-**Communication**: Async (internal queue) + Sync REST (inbound API)
-**Data Strategy**: DB per service (notifications DB) + Redis for delivery state
+## Options Considered
+| Option | Current load | Known growth | New ops burden | Verdict |
+|--------|--------------|--------------|----------------|---------|
+| A. Stay in the monolith: PostgreSQL table as the job queue, in-process workers | Campaign inserts 8,333 rows/s, and each row is also claimed and deleted: ~25,000 row writes/s. Even throttled to the 2,778/s drain rate it is ~8,300 writes/s, vs. a 3,000/s peak today (estimate) | Worse | None | Rejected — breaks at current load |
+| B. Transactional outbox + SQS + separately deployed workers built from the monolith codebase; in-app rows stay in the monolith DB | Primary gains ~378 writes/s (~13%) | ~656 writes/s (~22%) | SQS (managed), 6 queues + 6 DLQs | **Chosen** |
+| C. New service with its own PostgreSQL + Kafka (MSK) | Fits | Fits | A Kafka cluster nobody has run, a second DB, migrating in-app history and moving bell reads across a service boundary | Rejected for now — see breakpoints |
 
-## Component Design
+## Decision
+- **Chosen**: B. What you need from "a new service" is independent scaling and keeping provider
+  failures out of request handlers. Separate ECS services give both. A separate database would add
+  a data migration and a cross-service read for the bell menu, and no requirement calls for either.
+- **Giving up**: no replay of past notifications (SQS deletes on ack); no per-user ordering; the
+  notification code still ships from the monolith repo; the `notifications` table stays shared
+  between the web app and the in-app worker.
+- **Reversibility**:
+  - SQS: two-way door. Relay and consumers use one small publish/consume adapter, and queues are
+    drained, not migrated, so swapping brokers costs one adapter.
+  - Outbox: two-way door.
+  - In-app rows in the monolith DB: two-way door today. Moving them gets more expensive as more
+    code reads the table directly.
+  - Removing the synchronous send path: effectively one-way (it removes the `NOTIFY_ASYNC_TYPES` rollback). It is
+    gated in Rollout.
 
-### Notification API (Inbound)
-- **Responsibility**: Accept notification requests, validate, enqueue
-- **APIs exposed**: POST /notifications (single), POST /notifications/batch
-- **Scaling**: Horizontal, stateless — 3-10 replicas behind load balancer
-- **Rate limiting**: Per-caller API key, 10k req/min default
+## Components
+### Outbox table + relay
+- **Responsibility**: Make "business change happened" and "notification queued" atomic.
+- **Data owned**: `notification_outbox` (monolith DB), holding rows not yet handed to SQS.
+- **Interface**: Monolith code inserts a row in the same transaction as the business write. The relay
+  claims rows with `FOR UPDATE SKIP LOCKED`, sends `SendMessageBatch` (10 per call), deletes only
+  the acknowledged rows, then commits. The SQS call has a 5 s timeout so the claim transaction
+  stays short.
+- **Scaling**: One relay task handles 50/s. Add relay tasks if needed: `SKIP LOCKED` lets them run
+  concurrently without double-claiming.
 
-### Notification Queue (Kafka)
-- **Responsibility**: Durable buffer between intake and delivery
-- **Topics**: notifications.web-push, notifications.email, notifications.in-app
-- **Retention**: 24h — allows retry without data loss
-- **Scaling**: Partition per channel; increase partitions for campaign peaks
+### Campaign runner
+- **Responsibility**: Fan a campaign out to per-channel queues at ≤ 500k/min.
+- **Data owned**: `campaign_runs(id, status, last_user_id)`.
+- **Interface**: Reads the audience from the read replica in keyset pages of 1,000 users, publishes
+  them, then advances `last_user_id` on the primary once every entry in the page is acknowledged.
+- **Scaling**: One task per running campaign; 8,333/s is ~8.3 pages/s.
 
-### Channel Workers (per channel)
-- **Responsibility**: Consume queue, deliver via channel-specific provider
-- **Web Push Worker**: Uses web-push library, handles VAPID keys
-- **Email Worker**: Sends via SendGrid, handles bounce/unsubscribe
-- **In-App Worker**: Writes to notifications table, real-time via WebSocket
-- **Scaling**: Independent — email may need 50 workers, push 20, in-app 10
+### Queues (SQS standard)
+- **Responsibility**: Durable backlog between producers and senders.
+- **Interface**: `notif-{email,push,inapp}-{txn,campaign}`, 6 queues, each with a DLQ
+  (`maxReceiveCount` 5), a visibility timeout of 60 s and retention of 4 days.
+- **Scaling**: Managed. Splitting transactional from campaign queues is the bulkhead: a campaign
+  backlog cannot delay a password reset.
 
-### Delivery State Store (Redis)
-- **Responsibility**: Track delivery status, support idempotency
-- **TTL**: 48h per notification record
-- **Schema**: notification_id → { status, attempts, last_error, delivered_at }
-
-### Notifications DB (PostgreSQL)
-- **Responsibility**: Persistent in-app notification history per user
-- **Data owned**: in-app notification records, read/unread state
+### Channel consumers (6 ECS services, one image, `ROLE=<queue>`)
+- **Responsibility**: Deliver one message through its provider.
+- **Data owned**: none. Dedupe markers live in Redis; in-app rows live in `notifications`.
+- **Interface**: Long-poll receive of 10, send concurrently with a 10 s provider timeout, delete on
+  success. The worst case per batch is about one timeout, well under the 60 s visibility timeout.
+- **Scaling**: Transactional pools stay at a small fixed minimum. Campaign pools scale on queue depth
+  and drop to zero between campaigns. Size them to the drain rate (see Capacity), not the 8,333/s
+  arrival rate.
 
 ## Data Flow
 ```
-Caller → POST /notifications → Notification API → Validate & Enqueue
-                                                        ↓
-                                                   Kafka Topics
-                                          ┌──────────────────────────┐
-                                          ↓             ↓            ↓
-                                    Web Push       Email         In-App
-                                    Worker         Worker        Worker
-                                          ↓             ↓            ↓
-                                    Push Provider  SendGrid    DB + WebSocket
-                                          ↓
-                                    Redis (delivery state update)
+Monolith txn ──INSERT──▶ notification_outbox ──relay──▶ SQS *-txn ─┐
+Campaign runner ──(replica pages)──────────────────────▶ SQS *-campaign ─┤
+                                                                    ▼
+                                      consumers ──▶ SendGrid / web push / notifications table
+                                          │
+                                          └──▶ Redis dedupe marker (email, push)
 ```
+1. The order handler commits `orders` plus a `notification_outbox` row in one transaction.
+2. The relay publishes the row to `notif-email-txn` and deletes it once SQS acknowledges.
+3. The email consumer claims the key with `SET dedupe:{key} sending NX EX 60`, so two consumers
+   holding the same SQS message cannot both send.
+   - Claim wins: call SendGrid; on a 2xx, `SET dedupe:{key} sent EX 86400`, then delete the message.
+   - Claim fails and the value is `sent`: delete the message and stop.
+   - Claim fails and the value is `sending`: leave the message. It reappears after the 60 s
+     visibility timeout; by then the claim has expired if its holder died, so the message is not lost.
+4. Retryable errors (timeout, 429, 5xx) leave the message in the queue, and it is redelivered after
+   60 s. After 5 receives it goes to the DLQ. Permanent errors (invalid address) are counted as
+   failed and deleted.
+
+In-app consumer write, deduplicated by the database rather than Redis:
+```sql
+INSERT INTO notifications (user_id, title, body, dedupe_key)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (dedupe_key) DO NOTHING;
+```
+Adding `dedupe_key` plus a unique index to the existing table goes through `migration-safety`
+(nullable column, then `CREATE UNIQUE INDEX CONCURRENTLY`).
+
+## Data Consistency
+- **Source of truth**: the monolith DB for business events and in-app notifications. SQS is a
+  transport, not a record.
+- **Boundary writes**:
+  - Transactional: outbox. There is no "commit, then publish" window in which a crash loses the event.
+    If SQS is down, rows wait in PostgreSQL rather than in process memory.
+  - Campaigns: a checkpoint after each acknowledged page.
+- **Delivery semantics & idempotency**: at-least-once. Duplicate messages can come from three places:
+  - a relay crash after SQS acks but before the delete commits;
+  - a runner crash, which re-publishes up to 1,000 users;
+  - SQS standard redelivery.
+  The dedupe key (`outbox:{id}` or `campaign:{campaign_id}:{user_id}:{channel}`) absorbs them: the
+  `NX` claim for email and push, and the unique index for in-app. The only residual duplicate window
+  is a consumer crash after the provider accepts but before `sent` is written. The claim then
+  expires and the message is sent again. The input allows occasional duplicates.
+- **Ordering**: not required. Notifications are independent, and SQS standard does not order them.
+- **What can be lost**:
+  - Transactional: nothing silently. Undeliverable messages end in the DLQ, which pages.
+  - Campaign: permanent failures and DLQ'd messages, counted per campaign.
+  - Users created near the end of a run may be missed if the replica has not yet received them.
+    Accepted: they were not in the audience when the campaign started.
 
 ## Failure Modes
-| Failure | Impact | Mitigation | Recovery |
-|---------|--------|------------|----------|
-| Kafka down | No delivery (queued in API memory briefly) | Kafka cluster, 3 brokers | Auto-resume when Kafka recovers |
-| SendGrid down | Email delivery fails | Retry with backoff (5 attempts), dead-letter queue | Manual replay from dead-letter |
-| Worker crash mid-delivery | Duplicate delivery risk | Idempotency key checked against Redis before send | Redis TTL prevents infinite dedup |
-| DB down | In-app notifications not stored | WebSocket delivery still works; DB write retried | Backfill from Kafka on recovery |
+| Failure | Impact | Detection | Mitigation | Recovery |
+|---------|--------|-----------|------------|----------|
+| SQS unavailable or throttling | Transactional rows accumulate in the outbox (50/s = 180k rows/hour); the campaign pauses | Outbox oldest-row age; runner publish errors | Relay and runner retry with capped backoff (max 30 s) | Automatic drain; nothing lost |
+| SendGrid down or 429 | Email delayed; the transactional SLO is missed while it lasts | Provider error rate; queue age | Circuit breaker: > 50% errors over 1 min stops polling email queues for 30 s, then probes. Messages wait in SQS (4 days) instead of burning receives | Resume; redrive the DLQ once fixed |
+| Consumer crash mid-batch | Undeleted messages reappear after 60 s | Receive-count metric; dedupe hits | `NX` claim before sending; `sent` marker after | Automatic; only the send-then-crash duplicate remains (accepted) |
+| Redis unavailable | Dedupe can't be checked or written | Redis errors | Transactional: send anyway (a duplicate beats a loss). Campaign: pause consumers (a duplicate 3M-email blast is worse than a delay) | Resume when Redis returns |
+| Redis evicts keys under memory pressure | Duplicate sends; sessions shared with this Redis are logged out | `evicted_keys` > 0 | Confirm headroom and eviction policy before Phase 2 (Open Questions) | Move dedupe to its own Redis |
+| Poison message | Fails on every attempt | DLQ depth | `maxReceiveCount` 5 moves it to the DLQ | Fix, then use SQS DLQ redrive |
+| Campaign runner crash | Fan-out stalls | Campaign progress flat for > 1 min | A new task resumes from `last_user_id` | ≤ 1,000 re-published, deduped |
+| Primary DB failover | Business writes and outbox rows fail together (still consistent); in-app inserts fail | RDS event | None needed | SQS redelivers in-app messages |
 
-## Tradeoffs
-| Decision | Benefit | Cost | Alternative |
-|----------|---------|------|-------------|
-| Kafka over SQS | Replay capability, multi-consumer | Ops complexity | SQS: simpler but no replay |
-| Separate worker per channel | Independent scaling, fault isolation | More services to operate | Single worker: simpler but coupled |
-| Redis for delivery state | Fast idempotency checks | Another infra dependency | DB-only: slower, table lock risk |
-
-## Rollout Strategy
-1. Phase 1: Deploy API + Kafka + in-app worker only. Migrate in-app notifications from monolith.
-2. Phase 2: Add email worker. Cut over email delivery.
-3. Phase 3: Add web-push worker. Decommission monolith notification code.
-4. Rollback: Monolith notification code stays live until Phase 3 — any phase can roll back by re-enabling monolith flag.
+## Capacity & Growth
+- **Derivations**:
+  - Drain rates needed to finish a campaign in 1,800 s: email 3M/1,800 = 1,667/s; push
+    1.5M/1,800 = 833/s; in-app 0.5M/1,800 = 278/s. Total 2,778/s.
+  - Peak SQS backlog, at the end of the 10-minute generation: 5M − 2,778 × 600 ≈ 3.33M messages.
+  - Added primary writes: outbox 50 inserts + 50 deletes, plus 278 in-app inserts = 378/s, which is
+    ~13% of today's 3,000/s. If CPU scales linearly that is ~+6 points (estimate; measure in Phase 3).
+  - After doubling (assuming the same channel mix): email 3,333/s, push 1,667/s, in-app 556/s. Primary +656 writes/s (~22%).
+  - Redis dedupe keys (24 h TTL, email and push only): transactional ≤ 50 × 86,400 = 4.32M, plus a
+    campaign's 4.5M, gives ≤ ~8.8M keys. At ~100 B/key that is ~0.9 GB (estimate).
+- **Breakpoints**:
+  - Primary CPU during campaigns > 70% (measured) → move `notifications` and the in-app consumer to
+    their own DB. This is when extracting a real service pays off.
+  - SendGrid's contracted rate < the required email drain rate (1,667/s now, 3,333/s after growth)
+    → add a second provider or relax the 30-minute SLO with marketing.
+  - A second consumer needs the notification stream: SNS → SQS fan-out if it only needs live
+    events; Kafka if it needs replay.
+  - Outbox age grows while the relay is healthy → add relay tasks. No redesign needed.
+  - Redis memory headroom < dedupe key size → a dedicated Redis for dedupe.
 
 ## Observability
-- **Metrics**: enqueue_rate, delivery_rate per channel, delivery_latency p99, dlq_depth
-- **Alerts**: dlq_depth > 1000 (delivery failures spiking), delivery_latency p99 > 30s
-- **Dashboards**: Real-time delivery funnel: enqueued → delivered → failed
+- **Metrics**:
+  - Outbox: `outbox_oldest_age_seconds`, `outbox_rows`.
+  - Per queue: `ApproximateAgeOfOldestMessage` and `ApproximateNumberOfMessagesVisible`, for DLQs too.
+  - Per channel: sent, failed_permanent, failed_retryable, provider latency p99, dedupe hits.
+  - Per campaign: published/total and delivered/total.
+  - Redis `evicted_keys`; primary CPU.
+- **Alerts**:
+  - Page on-call: any `*-txn` queue oldest-message age > 60 s for 5 min (transactional SLO breached).
+  - Page on-call: outbox oldest row > 60 s (same SLO).
+  - Page on-call: any message in a `*-txn` DLQ (must-not-lose data needs a human).
+  - Page on-call: Redis `evicted_keys` > 0 (duplicates and logouts).
+  - Notify the campaign owner and on-call, without paging: projected completion > 30 min, computed
+    as elapsed + remaining / current drain rate > 1,800 s.
+- **Dashboards**: per-channel funnel (queued → sent → failed); live campaign progress with the
+  projected finish; primary CPU during campaigns against the 70% breakpoint.
+- **Tracing**: the dedupe key is the correlation id. It travels as an SQS message attribute and a
+  SendGrid `custom_args` value, and appears in every log line from outbox insert to provider response.
+
+## Rollout & Migration
+1. Create the queues, outbox table, relay and `email-txn` consumer. Add a config setting
+   `NOTIFY_ASYNC_TYPES` (the list of notification types on the async path), read when the outbox row would be written, so an item never takes both
+   paths. Enable it for mention emails only.
+   Validation gate: 1 week; sent counts match SendGrid activity; outbox age p99 < 60 s.
+   Rollback: remove the type from `NOTIFY_ASYNC_TYPES`, and handlers send synchronously again. Rows already queued still drain.
+2. Add the `dedupe_key` migration (via `migration-safety`), then the push and in-app consumers.
+   Move the remaining transactional types one at a time.
+   Validation gate: no txn DLQ messages for 1 week. Rollback: remove the type from `NOTIFY_ASYNC_TYPES`.
+3. Move the batch script's campaigns to the campaign runner. Run the first campaign at 10% of the
+   audience (500k); measure per-task throughput and primary CPU, then size the pools and run at full
+   audience. Validation gate: finishes < 30 min with primary CPU < 70%.
+   Rollback: run the campaign with the old batch script.
+- **Irreversible step**: deleting the synchronous send code and the batch script. Entry criteria:
+  every type on the async path for 2 weeks, zero unexplained txn DLQ messages, and two full-size
+  campaigns within SLO.
+
+## Cost
+- **Infrastructure**:
+  - SQS: transactional 50/s × 2,592,000 s/month = 129.6M, plus campaigns 5M × 3 × 4.33 weeks ≈ 65M,
+    gives ≈ 195M messages/month. That is ~58M requests when send, receive and delete all run in full
+    batches of 10, and up to ~584M unbatched, plus empty long polls. Multiply by the current SQS
+    standard price.
+  - ECS: campaign pools run only while a campaign drains, 3 × ~30 min ≈ 1.5 h/week. Task counts =
+    drain rate ÷ per-task throughput measured in Phase 3.
+  - SendGrid: same email volume as today; the rate tier may change (Open Questions).
+  - Redis: ~0.9 GB of dedupe keys (estimate).
+- **Operational**: 12 queues (6 plus DLQs), a DLQ triage runbook, and 8 ECS services from one image
+  (relay, runner, 6 consumers). No new stateful system to patch or upgrade.
+
+## Open Questions
+- What send rate does the SendGrid contract allow? It must be ≥ 1,667/s plus transactional
+  headroom now, and ≥ 3,333/s after growth. If it is lower, the 30-minute SLO or the provider choice
+  changes.
+- How much memory headroom does the session Redis have, and what is its `maxmemory-policy`? This
+  decides whether dedupe can share it or needs its own instance before Phase 2.
+- Does "double per-campaign volume" mean more users or more channels per user? That changes the
+  in-app share and the primary write estimate.

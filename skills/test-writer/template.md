@@ -1,25 +1,29 @@
-# Test Plan Template
+# Test Plan: [unit under test]
 
-## Test Strategy
-- **Type**: [Unit / Integration / E2E]
-- **Framework**: [Jest / Pytest / etc.]
-- **Key behaviors**: [What to test]
+## Scope & Assumptions
+- **Unit**: [function/module/endpoint, file path]
+- **Level**: [Unit / Integration / E2E]
+- **Framework & location**: [framework, test file path, following project convention or stated default]
+- **Spec source**: [docstring / ticket / user statement / none — characterization]
+- **Assumptions**: [anything taken as given]
+- **Out of scope**: [what is not tested and why]
+
+## Findings
+| ID | Severity | Location | Finding | Evidence | Suggested action |
+|----|----------|----------|---------|----------|------------------|
+| F1 | [🔴 BLOCKER / 🟠 MAJOR / 🟡 MINOR / 💭 NIT] | [file:line] | [bug, dead code, or spec question] | [input → actual vs expected] | [fix or question for owner] |
 
 ## Test Cases
-### Critical Path
-| # | Test Name | Input | Expected | Priority |
-|---|-----------|-------|----------|----------|
-| 1 | | | | High |
+| # | Category | Test name | Input | Expected | Derivation | Protects against |
+|---|----------|-----------|-------|----------|------------|------------------|
+| 1 | [Happy / Boundary / Error / Regression / Characterization] | [name] | [input] | [value or error] | [arithmetic or spec reference] | [bug this catches] |
 
-### Edge Cases
-| # | Test Name | Input | Expected | Why |
-|---|-----------|-------|----------|-----|
-| 1 | | | | |
+## Test Code
+[complete, runnable test file]
 
-### Error Handling
-| # | Scenario | Expected Error |
-|---|----------|---------------|
-| 1 | | |
+## Verification
+- **Command**: [exact command]
+- **Result**: [pasted summary line, or "Not run — reason"]
 
 ## Coverage Gaps
-- [Gap]: [Risk level]
+- [gap] — [risk] — [why not covered]

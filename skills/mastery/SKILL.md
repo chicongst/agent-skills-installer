@@ -1,148 +1,84 @@
 ---
 name: mastery
-description: Use when writing, modifying, or generating any code — automatically applies senior-level engineering principles regardless of programming language.
+description: Use when writing or modifying code in any language — a silent baseline of senior engineering defaults (errors, bounded queries, idempotency, concurrency, security, testability). When a task-specific skill applies it leads and this only fills gaps: refactor/dotnet-code-refactor, fix-bug/debug, test-writer, ui-design, db-design, api-design. Never overrides the project's conventions or CLAUDE.md. Not for reviewing or auditing code — use code-review, pr-review, code-audit, or dotnet-code-review.
 ---
 
-# Senior Engineering Principles
+# Senior Engineering Defaults
 
-You internalize these principles and apply them silently while writing code. Do not announce them, do not emit a checklist, do not produce a report — just write better code. Skip any principle that does not exist or is irrelevant in the current language or context.
+Apply these silently while writing code. Do not announce them, emit a checklist, or add a report — the code is the output. Skip any rule that does not fit the language or context.
 
-This skill covers what you decide *while typing*. For deep dives, defer to the dedicated skill instead of duplicating its judgment here:
+## Precedence
 
-| Topic | Skill |
-|-------|-------|
-| Schema, index design, query plans | `db-design` |
-| Profiling, benchmarking, optimization tradeoffs | `performance-review` |
-| Threat modeling, vulnerability review | `security-review` |
-| Service boundaries, messaging topology, failure design | `architect` |
-| Endpoint contracts, versioning, pagination shape | `api-design` |
-| Test strategy and coverage design | `test-writer` |
+1. **The project wins.** CLAUDE.md, lint/format config, and patterns already in the codebase override everything below. Read neighboring code before writing: match its error style, logger, naming, test framework, and folder layout.
+2. **A task-specific skill wins next** — `refactor`/`dotnet-code-refactor`, `fix-bug`/`debug`, `test-writer`, `ui-design`, `db-design`, `api-design`. Use this skill only for what that skill does not cover.
+3. **These defaults** apply to whatever is left.
 
-## Context Awareness
+If a rule here conflicts with the project, follow the project. If following the project would introduce a real defect (SQL injection, lost data), say so in one line instead of silently deviating.
 
-Assess before writing:
+## Scope discipline
 
-- **Prototype / script / PoC** — keep it simple, skip defensive layers, optimize for speed
-- **Production / shared codebase** — apply full rigor: error handling, edge cases, validation, logging
-- **Unclear** — default to production-level for business logic, prototype-level for exploratory code
+- Change only what the task needs. No drive-by renames, reformatting, or "while I'm here" refactors in the same change.
+- Keep behavior changes separate from restructuring. If a fix requires a behavior change the user did not ask for (new pagination, different error message, time zone handling), state it explicitly.
+- Match rigor to context: a throwaway script skips defensive layers; money, auth, quotas, and data writes never do. When unsure, treat business logic as production.
+- State non-obvious assumptions in one or two lines after the code (e.g., "assumes `last_login` is `timestamptz`"). If the answer would change the design, ask first — use AskUserQuestion if available, otherwise ask in plain text.
 
-Let context drive complexity. Never over-engineer a throwaway script. Never under-engineer a payment flow.
+## Simplicity
 
-## KISS, YAGNI, DRY
+- Write the plain function first. Add an interface, strategy, or factory only when a second real implementation exists now.
+- Duplicate until the third occurrence with the same contract, then extract.
+- No unused parameters, constants, imports, or config knobs. Every name you add must be read somewhere.
+- Wrap a third-party dependency only at a boundary where the wrapper adds value: a narrower interface, error translation, a test seam, or a swap that is actually needed. A pass-through proxy is an anti-pattern.
+- Before writing a helper, search the codebase for an existing one.
 
-- **KISS** — choose the simplest solution that works. Complexity is a cost, not a feature.
-- **YAGNI** — don't build for hypothetical future requirements. Add extension points only when the second use case arrives.
-- **DRY** — extract when duplication exceeds 3 occurrences AND the abstraction is stable. Premature DRY is worse than duplication.
+## Errors
 
-Three similar lines of code beat a premature abstraction. Reach for a design pattern only when a plain function has already failed — a pattern applied to one variant is over-engineering, not craft.
+- Validate at trust boundaries (request input, files, env, third-party responses) and fail fast with a message naming the field and the problem.
+- Catch the specific errors you can handle. A catch-all is acceptable only at a top-level boundary (request handler, job runner, main loop) that logs and converts to a response or exit code.
+- Never swallow: log with context, re-raise, or return an explicit error value — whichever the codebase already uses.
+- Retry only transient failures, only on idempotent operations, with capped exponential backoff plus jitter and an overall deadline.
 
-## Error Handling
+## Data access
 
-- Fail fast at system boundaries — validate input early, reject invalid state immediately
-- Use the language's idiomatic error mechanism (exceptions, Result/Either, error return, Option)
-- Never swallow errors silently — log, propagate, or handle with explicit intent
-- Distinguish recoverable vs fatal errors — retry transient failures, crash on corruption
-- Include context in errors — what failed, with what input, why it matters
-- Avoid catch-all handlers in business logic — catch specific errors, let unexpected ones bubble
+- Parameterize every query; never build SQL, shell commands, or paths by string concatenation of input.
+- Select explicit columns; avoid `SELECT *` in production queries.
+- Every list query is bounded. For large or mutable sets use keyset pagination (`WHERE id > :last_id ORDER BY id LIMIT :n`); offset only for small, stable sets.
+- No N+1: join, batch-load, or use the ORM's eager loading.
+- Process large datasets in bounded chunks with a resumable cursor; batch small writes instead of one round-trip per row.
+- Multi-statement writes that must succeed together go in one transaction.
+- For index and schema decisions, use `db-design`.
 
-## Concurrency & Async
+## Concurrency and idempotency
 
-- Prefer async/await (or language equivalent) over raw callbacks or manual thread management
-- Identify shared mutable state and protect it — mutex, lock, atomic, channel, or immutable design
-- Never assume ordering without explicit synchronization
-- Use structured concurrency where available (task groups, coroutine scope, context cancellation)
-- Handle cancellation and timeout explicitly — never let async work run unbounded
-- Run independent async work concurrently; sequential `await` on unrelated calls is a latency bug
-- **Never read-then-write without holding a lock.** Between the read and the write, another transaction can mutate the same row — this is how oversell and lost updates happen. Use an atomic operation (`UPDATE stock SET qty = qty - 1 WHERE qty > 0`), a pessimistic lock when contention is high, or an optimistic version check when conflicts are rare.
+- Never read-then-write shared state without protection. Prefer an atomic statement (`UPDATE stock SET qty = qty - 1 WHERE id = :id AND qty > 0`, then check affected rows); otherwise a row lock or an optimistic version check.
+- Operations that can be retried or re-run (jobs, webhooks, message handlers, payment calls) must be idempotent: a processed marker, a unique constraint, or an idempotency key.
+- Run independent I/O concurrently; sequential awaits on unrelated calls add latency for nothing.
+- Every network call and every async task has a timeout or cancellation path.
 
-## Retry & Resilience
+## Security
 
-- Make an operation idempotent *before* adding retry — retry without idempotency causes duplication
-- Exponential backoff with jitter for transient failures; always set a max attempt count and total timeout
-- Circuit-break external dependencies — fail fast when downstream is unhealthy
-- Log each retry attempt with context
+- No secrets in code, logs, or error messages. Read them from the environment or a secret manager.
+- Never log tokens, passwords, or PII; log stable IDs instead.
+- Passwords: argon2id or bcrypt through a maintained library. Never a fast hash, never hand-rolled crypto.
+- Check authorization on every access to a resource, not just authentication at the edge.
 
-## Caching
+## Time, config, observability
 
-- Cache at the right layer — in-memory for hot path, distributed for shared state
-- Every cache entry needs an invalidation strategy — TTL, event-driven, or write-through
-- Guard against stampede — locking, request coalescing, or stale-while-revalidate
-- Never cache sensitive data without encryption and access control
+- Store and compare time in UTC with timezone-aware types (Python: `datetime.now(timezone.utc)`, not the deprecated `datetime.utcnow()`). Convert to local time only for display.
+- Inject the clock or pass "now" as a parameter when logic depends on time.
+- Config comes from the environment or config files, validated at startup; missing required values fail fast. Local named constants are fine for values that never vary by environment.
+- Use the project's logger. Log one line per business event with stable IDs and outcome; errors carry enough context to reproduce.
 
-## Bounded Data Movement
+## Testability
 
-Two opposite problems, both solved by never moving data one row at a time:
+- Pass dependencies (DB connection, HTTP client, clock, email service) in instead of constructing them inside business logic.
+- Keep I/O at the edges and decisions in pure functions.
+- No module-level mutable state.
 
-- **Chunk large data down** — process big datasets in bounded chunks, stream or paginate with a cursor, never load unbounded results into memory. Handle partial failure: track progress, support resume from the last checkpoint.
-- **Batch small operations up** — bulk insert instead of per-row writes, batch endpoints instead of per-item calls, DataLoader instead of N+1. Flush on a size threshold or a short time window.
-- Apply backpressure — slow producers when consumers cannot keep up
-- Tune size and interval together — too small loses efficiency, too large adds latency and memory pressure
-- Know which item in a batch failed; never blindly retry the whole batch
+## Structure
 
-## Query & Data Access
+- Follow the project's existing folder layout. If none exists, group by feature or domain rather than by technical layer.
+- One unit, one reason to change; if you cannot name it precisely, it does too much.
+- Prefer guard clauses to nesting deeper than three levels.
+- Adding a dependency needs a reason the standard library or existing dependencies cannot cover; update the lockfile with it.
 
-- Prevent N+1 — eager load, batch load, or join
-- Select only the columns you need; never `SELECT *` in production code
-- Always parameterize — never concatenate user input into a query
-- Set query timeouts — a missing WHERE clause should not take down the database
-- Every list query needs a limit. Cursor pagination (`WHERE id > last_seen`) for large sets; offset only for small ones
-- Run EXPLAIN on any non-trivial query before shipping it. For index design and query-plan analysis, use `db-design`.
-
-## Security Fundamentals
-
-- Validate and sanitize all external input — request bodies, headers, uploads, URL parameters
-- Parameterized queries only
-- Least privilege for services, DB users, and API keys
-- Never hardcode secrets — environment variables, secret manager, or vault
-- Hash passwords with bcrypt or argon2 — never MD5/SHA
-- Security headers, CORS policy, and rate limits at API boundaries
-- Authentication and authorization are separate checks — confirm identity, then confirm permission
-
-## Logging & Observability
-
-- Structured logging (JSON) with consistent fields: timestamp, level, correlation/trace ID, context
-- Log levels mean something: ERROR needs action, WARN is degraded state, INFO is a business event, DEBUG is for development
-- Never log secrets, tokens, or PII
-- Include request context — who, what, when, duration, outcome
-- Add metrics for business-critical operations, not just system health
-
-## Configuration Management
-
-- Externalize all configuration — no magic numbers, no hardcoded URLs, no embedded credentials
-- Validate configuration at startup — fail fast with a clear error if required config is missing
-- Use typed/schema-validated config, not raw string parsing
-- Document every option — what it does, valid values, default
-
-## Code Organization
-
-- One module/class = one responsibility — if you cannot name it clearly, it does too much
-- Keep functions short and focused — a function needing a comment block to explain its flow is too long
-- Minimize public API surface — expose only what consumers need
-- Group by feature/domain, not by technical layer — `user/` over `controllers/`, `services/`, `models/`
-- Avoid deep nesting — early return, guard clauses, extract helpers
-
-### SOLID
-- **Single Responsibility** — a module changes for one reason only
-- **Open/Closed** — extend through composition or polymorphism, not by editing existing code
-- **Liskov Substitution** — subtypes are drop-in replacements
-- **Interface Segregation** — many small interfaces over one large one
-- **Dependency Inversion** — depend on abstractions; inject dependencies, don't instantiate them
-
-In languages without classes or interfaces, apply the underlying ideas: separation of concerns, modularity, clear contracts. Use closures, higher-order functions, or module patterns for the same decoupling.
-
-## Dependency Management
-
-- Pin versions in production — `1.2.3`, not `^1.2.3`
-- Review changelogs before upgrading, especially major versions
-- Minimize dependency count — every dependency is a supply chain risk
-- Wrap third-party libraries behind your own interface to isolate the blast radius of breaking changes
-
-## Testing Awareness
-
-Make code testable by default:
-
-- Inject dependencies — no hardcoded connections, clients, clocks, or file paths
-- Keep side effects at the edges — pure business logic in the core, I/O at the boundaries
-- Return values instead of mutating state
-- Write small functions with clear inputs and outputs
-- Avoid global/static mutable state — it makes tests order-dependent and flaky
+A worked example is in `examples/example.txt` (if installed).

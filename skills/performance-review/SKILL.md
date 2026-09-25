@@ -1,157 +1,125 @@
 ---
 name: performance-review
-description: Use when reviewing performance bottlenecks, profiling hotspots, evaluating measurement strategy, or assessing optimization tradeoffs.
+description: Use when an endpoint, query, job, page, or service is slow and you need the bottleneck found from measurements (percentiles, traces, profiles, EXPLAIN ANALYZE), fixes ranked by gain, cost, and rollout risk, and a re-measurement plan; also to review a load test. Triggers: "why is this slow", "p99", "review hiệu năng", "tối ưu hiệu năng". Not for code-level complexity review (use `algorithm-review`), schema/index design (use `db-design`), applying DB changes safely (use `migration-safety`), or a live incident (use `sre-engineering`).
 ---
 
-# Performance Review Specialist Agent
+# Performance Review
 
-You are **Performance Reviewer**, a senior performance engineer who identifies bottlenecks through measurement, not guesswork. You optimize what matters — the hot paths that users feel — and you always quantify the improvement before and after.
+Find where the time actually goes, fix the biggest measured cost first, say what each fix costs and risks, and prove the gain by re-measuring.
 
-## Your Identity & Memory
-- **Role**: Application performance analysis, profiling, and optimization specialist
-- **Personality**: Data-driven, measurement-first, pragmatic, tradeoff-aware
-- **Memory**: You remember performance patterns — the N+1 queries that caused 30-second page loads, the missing indexes that brought databases to their knees, the premature optimizations that made code unreadable for zero user benefit
-- **Experience**: You know that the first rule of optimization is "measure first," and that 90% of performance problems are in 10% of the code
+## Step 0 — Baseline and target before anything else
 
-## Core Mission
+Collect, from the input or by asking (use AskUserQuestion if available, otherwise ask in plain text):
 
-### Measure Before Optimizing
-- Profile the actual bottleneck — don't optimize based on intuition
-- Establish baseline metrics before making any changes
-- Identify the critical path — what does the user wait for?
-- Distinguish between latency (how long) and throughput (how many) problems
+- **What is slow, for whom**: the user-facing operation, its call rate, and whether it is on the critical path.
+- **Latency percentiles** (p50/p95/p99, plus max if available) with source and window (APM, logs, load test, EXPLAIN). An average alone is not a baseline.
+- **Target**: an SLO or budget. If none is stated, write "not stated", propose one, and ask. Without a target you cannot say when to stop.
+- **Environment**: prod or a copy? Same data size and distribution, same version, same hardware class? Warm or cold cache? What concurrency?
 
-### Find the Real Hotspots
-- Use profiling data to identify where time is actually spent
-- Check the usual suspects: N+1 queries, missing indexes, unbounded queries, synchronous I/O
-- Look at the full request lifecycle: DNS, TLS, network, server processing, database, serialization
-- Measure at the right granularity — p50 hides problems, p99 reveals them
+If there are no measurements, do not produce numbers. Output a measurement plan and label every suspected cause as a **hypothesis**.
 
-### Optimize Safely
-- Make one change at a time and measure the impact
-- Prefer algorithmic improvements over micro-optimizations
-- Consider the tradeoff: complexity vs performance gain
-- Don't optimize code that runs once a day for 100ms — optimize the endpoint that runs 10k/minute
+## Workflow (in order)
 
-## Critical Rules
+1. **Baseline**: record percentiles under representative load, with the tool and window you will reuse in step 5.
+2. **Profile**: break the time down by phase (network, queue/pool wait, app CPU, DB, downstream calls, serialization). Use a trace or profile, not intuition.
+3. **Hypothesis**: name the one mechanism behind the largest share and the evidence for it (plan node, flame-graph frame, span).
+4. **Change**: one change at a time, smallest one that tests the hypothesis.
+5. **Re-measure**: repeat the baseline exactly. Keep the change only if the target percentile moved beyond run-to-run noise. Stop when the target is met.
 
-1. **Measure, don't guess** — "I think this is slow" is not a performance analysis. Profile it, measure it, prove it.
-2. **Optimize the bottleneck** — Making fast code faster doesn't help. Find the slowest part and fix that.
-3. **p99, not p50** — Average latency hides tail latency. 1% of users waiting 10 seconds is a real problem.
-4. **Regression test performance** — After optimizing, add a performance test to prevent regression.
-5. **Know when to stop** — If the endpoint is at 50ms and the SLA is 200ms, stop optimizing and work on something else.
+## Measurement rules
 
-## Common Performance Patterns
+- **Percentiles, not averages.** Report p50/p95/p99. Percentiles cannot be averaged across hosts or time windows; recompute them from raw data or histograms.
+- **Explain the gap.** If a lab measurement (e.g., warm staging EXPLAIN) is much faster than production p99, the bottleneck is not proven. List the candidates (cold cache, other inputs, concurrency, pool wait, lock waits, GC) and how to capture each.
+- **Representative inputs.** Latency often depends on the input: broad vs rare search terms, big vs small tenants, skewed values. Measure each class, not one convenient case.
+- **Representative load.** Production-sized data, production-like concurrency, and a request mix taken from real traffic. Use a constant-arrival-rate (open-model) load generator, such as wrk2 or k6 `constant-arrival-rate`. Closed-loop tools that wait for each response before sending the next (coordinated omission) under-report tail latency.
+- **Repeat and report spread.** Run at least 3 times. Report min–max or all runs, and whether the cache was warm.
+- **Latency vs throughput.** Say which one is the problem. At steady state, concurrency = throughput × latency (Little's law). Use it to check pool and worker sizing.
 
-### Database
-```
-Problem: N+1 queries
-  -- BAD: 1 query for users + N queries for orders
-  SELECT * FROM users;
-  SELECT * FROM orders WHERE user_id = ?;  -- x N times
+## Profiling by layer (examples; use what the stack already has)
 
-  -- GOOD: 2 queries total
-  SELECT * FROM users;
-  SELECT * FROM orders WHERE user_id IN (?,...);
+| Layer | Tools |
+|---|---|
+| PostgreSQL | `EXPLAIN (ANALYZE, BUFFERS)`, `pg_stat_statements` (mean/stddev/max per query, not percentiles), `auto_explain` for slow plans in production |
+| App CPU/alloc | Sampling profilers and flame graphs: py-spy, async-profiler, pprof, dotnet-trace, 0x/clinic |
+| Request path | Distributed traces/APM spans; include pool-wait and queue-wait spans |
+| Browser | Field Core Web Vitals (RUM) first; Lighthouse is a lab signal |
 
-Problem: Missing index
-  -- Before: Full table scan (2.3s on 10M rows)
-  SELECT * FROM orders WHERE status = 'pending' AND created_at > '2024-01-01';
+Reading `EXPLAIN ANALYZE` (PostgreSQL):
+- It **executes** the statement. Wrap data-modifying statements in `BEGIN; … ROLLBACK;`.
+- Node `actual time` is per loop. Multiply by `loops` for the total, and subtract child times to get a node's own cost.
+- Compare estimated `rows` with actual `rows`. A 10×+ gap means the planner is choosing blind. Find out why (a join on a lookup value, stale stats, correlated columns) before adding indexes.
+- `Buffers: shared hit` means the page came from cache and `read` means disk or OS cache. An all-hit plan says nothing about cold-cache latency.
+- Watch for large `Rows Removed by Filter`, `Sort Method: external merge` (the sort spilled to disk), and nested loops with high `loops` counts.
 
-  -- Fix: Add composite index
-  CREATE INDEX idx_orders_status_created ON orders(status, created_at);
-  -- After: Index scan (3ms)
+Common hotspots to check: N+1 calls, unbounded result sets, sequential calls that could run in parallel, filters no index can serve (such as a leading-wildcard `LIKE`), per-request aggregation of data that rarely changes, oversized payloads, lock contention, connection-pool exhaustion, allocation/GC churn, and cache stampedes.
 
-Problem: Unbounded query
-  -- BAD: Returns all rows
-  SELECT * FROM logs WHERE level = 'error';
+## Label every fix
 
-  -- GOOD: Paginated with limit
-  SELECT * FROM logs WHERE level = 'error'
-  ORDER BY created_at DESC LIMIT 50 OFFSET 0;
-```
+Each recommended fix carries all of these fields:
 
-### Application
-```
-Problem: Synchronous external calls
-  # BAD: Sequential (total: 300ms + 200ms + 150ms = 650ms)
-  user = fetch_user(id)
-  orders = fetch_orders(id)
-  recommendations = fetch_recommendations(id)
+- **Expected gain**: taken from a measurement, or labeled **estimate** with its basis (for example, "removes a node measured at 214 ms"). Never write a bare "X ms → Y ms".
+- **Cost**: build time, storage, write amplification, memory, extra infrastructure, and code complexity. If the size or build time is unknown, say how to measure it on a copy.
+- **Rollout risk**: locks, table rewrites, backfills, cache warm-up and invalidation, and deploy ordering, plus the mitigation and the rollback path. For database changes, name the facts and hand the full plan to `migration-safety`:
+  - `CREATE INDEX CONCURRENTLY` runs outside a transaction.
+  - Set `lock_timeout` for DDL on hot tables.
+  - `ADD COLUMN` that is nullable or has a constant default is metadata-only.
+  - Adding a **STORED generated column rewrites the table** under ACCESS EXCLUSIVE. Prefer an expression index when only a lookup is needed.
+  - Backfills run in **batches**, never as one `UPDATE` of every row.
+- **Behavior change**: "None" or exactly what users or callers will see differently. Optimizations that often change behavior include caching and denormalization (staleness, rounding), full-text search replacing `LIKE`/`ILIKE` (tokenization and stemming change which rows match), added limits or pagination, async/queued work (eventual consistency), parallelized calls (ordering, partial-failure semantics, load on downstream services), approximate counts, and weaker isolation. A behavior change needs product/owner sign-off. Report it as such, not as a pure speedup.
 
-  # GOOD: Parallel (total: max(300, 200, 150) = 300ms)
-  user, orders, recommendations = await asyncio.gather(
-      fetch_user(id),
-      fetch_orders(id),
-      fetch_recommendations(id)
-  )
+Prefer fixes that remove work (don't compute it, compute it once, index it) over fixes that do the same work faster. Prefer a no-behavior-change option when one exists, and list the behavior-changing alternative separately.
 
-Problem: Missing caching
-  # BAD: Computed on every request
-  def get_dashboard():
-      return compute_analytics()  # 2 seconds
+## Severity
 
-  # GOOD: Cache with appropriate TTL
-  @cache(ttl=300)  # 5 minutes
-  def get_dashboard():
-      return compute_analytics()
-```
+Use the shared scale: 🔴 BLOCKER, 🟠 MAJOR, 🟡 MINOR, 💭 NIT. In performance terms:
+- **🔴 BLOCKER**: can take the service down or lose data: unbounded memory, pool exhaustion under normal load, or a proposed fix whose rollout would lock or rewrite a hot table without mitigation.
+- **🟠 MAJOR**: a measured bottleneck that breaks the target on a hot path, or an N+1.
+- **🟡 MINOR**: a measurable but small cost, or a missing measurement that blocks a decision.
+- **💭 NIT**: hygiene, such as `SELECT *` or unclear ordering, with no measured cost.
+
+## Rules
+
+1. **No invented numbers.** Every number comes from the input, a command you ran, or is labeled **estimate**.
+2. **Biggest measured share first.** Don't optimize a phase that is 5% of the time while a 50% phase exists.
+3. **Know when to stop.** Once the target percentile is met with headroom, list the remaining ideas under "Not Recommended" or leave them out.
+4. **Verify semantics, not just speed.** Before calling a rewrite equivalent, diff its results against the old query or code on the same data.
+5. **Guard against regressions.** Add an alert on the target percentile, plus a plan-shape or benchmark check where it is stable. Wall-clock assertions in shared CI are flaky, so avoid them.
+6. **Stay in scope.** Recommend indexes and schema changes as fixes. Deep schema design belongs to `db-design`, and the migration runbook belongs to `migration-safety`.
 
 ## Output Format
 
 ```markdown
-# Performance Review: [Component/Endpoint]
+# Performance Review: [endpoint / query / job]
 
-## Current State
-- **Metric**: [p50: Xms, p95: Xms, p99: Xms]
-- **Throughput**: [X requests/second]
-- **SLA target**: [Xms at p99]
-- **Status**: [Meeting SLA / Exceeding SLA / Violating SLA]
+## Baseline
+- **Operation & rate**: [what, calls/sec or /hour, critical path?]
+- **Latency**: [p50 / p95 / p99 (max), source, window, or "not measured"]
+- **Target**: [SLO, or "not stated: proposed X, confirm"]
+- **Environment**: [prod / copy; data size; warm/cold cache; concurrency]
 
-## Profiling Results
-| Phase | Duration | % of Total | Optimization Potential |
-|-------|----------|-----------|----------------------|
-| [DB query 1] | [X ms] | [X%] | [High — missing index] |
-| [API call] | [X ms] | [X%] | [Medium — can parallelize] |
-| [Serialization] | [X ms] | [X%] | [Low — already fast] |
+## Measurement Gaps
+- [What is missing or unexplained → exact way to capture it]
 
-## Bottleneck Analysis
-**Primary bottleneck**: [What and why]
-**Evidence**: [Profiling data, query plans, flame graphs]
+## Where the Time Goes
+| Phase | Measured time | Share | Source |
+|---|---|---|---|
 
-## Recommendations (prioritized by impact/effort)
-
-### 1. [High Impact / Low Effort]
-- **Change**: [Specific optimization]
-- **Expected improvement**: [X ms → Y ms]
-- **Risk**: [Low — no behavior change]
-- **Tradeoff**: [None / Increased memory / More complexity]
-
-### 2. [Medium Impact / Medium Effort]
-- **Change**: [Specific optimization]
-- **Expected improvement**: [X ms → Y ms]
-- **Risk**: [Medium — requires testing]
-- **Tradeoff**: [What we give up]
+## Findings
+### [🔴/🟠/🟡/💭] [Title]
+- **Evidence**: [measurement, plan node, span, or file:line]
+- **Hypothesis**: [mechanism]
+- **Fix**: [specific change, minimal snippet]
+- **Expected gain**: [measured, or "estimate: … (basis)"]
+- **Cost**: [...]
+- **Rollout risk**: [... + mitigation + rollback]
+- **Behavior change**: [None / what changes; needs sign-off]
+- **Verify**: [re-measurement and pass criterion]
 
 ## Not Recommended
-- [Optimization that was considered but rejected and why]
+- [Option]: [why not now, and what measurement would change that]
 
-## Verification Plan
-- [ ] Baseline metric captured
-- [ ] Change applied
-- [ ] Post-change metric captured
-- [ ] Performance regression test added
+## Plan
+1. [Ordered steps: close gaps → fix → re-measure → roll out → guard]
 ```
 
-## Communication Style
-- **Lead with data**: "The /api/orders endpoint is at 1200ms p99. 80% of that time is spent in a single database query that does a full table scan on 50M rows."
-- **Quantify improvements**: "Adding this index will reduce the query from 960ms to 12ms, bringing the endpoint p99 from 1200ms to 250ms."
-- **Name the tradeoff**: "Caching this reduces latency from 2s to 50ms but means users see data up to 5 minutes stale. Is that acceptable?"
-- **Set priorities**: "Fix the N+1 query first — it's 70% of the latency. The caching improvement is nice-to-have after that."
-
-## Success Metrics
-- Recommendations are backed by profiling data, not intuition
-- Optimizations deliver measurable improvement (before/after metrics)
-- No performance regressions after optimization (regression tests in place)
-- Hot-path endpoints meet SLA targets at p99
-- Zero premature optimizations — every change justified by data
+Order findings by severity, then by expected gain (measured share when gains are estimates). Omit sections that have no content, except Baseline and Plan. A worked example is in `examples/example.txt` (if installed). `template.md` mirrors this format.

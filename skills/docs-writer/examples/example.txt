@@ -1,148 +1,186 @@
 # Example: /docs-writer
 
 ## User Input
-Write documentation for our new file upload API. It accepts multipart uploads,
-validates file type and size, stores in S3, returns a URL. Max 10MB, supports
-PNG/JPG/PDF. Requires authentication. Used by frontend engineers.
+
+Write API docs for our new file upload endpoint. Readers are frontend engineers
+calling it from the browser. Production base URL is https://api.example.com.
+Locally, `npm run dev` serves the API on http://localhost:3000 with S3 replaced
+by a local stub, and accepts the token `dev-token`. src/storage/s3.js (not
+pasted) uploads the buffer to S3 and returns the object URL.
+
+```js
+// src/routes/files.js
+const crypto = require('node:crypto');
+const express = require('express');
+const multer = require('multer');
+const { requireAuth } = require('../middleware/auth');
+const { putObject } = require('../storage/s3');
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const ALLOWED_TYPES = ['image/png', 'image/jpeg', 'application/pdf'];
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_BYTES } });
+
+const router = express.Router();
+
+router.post('/v1/files', requireAuth, (req, res, next) => {
+  upload.single('file')(req, res, async (err) => {
+    if (err && err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: { code: 'FILE_TOO_LARGE', message: 'File exceeds 10 MB' } });
+    }
+    if (err) return next(err);
+    if (!req.file) {
+      return res.status(400).json({ error: { code: 'NO_FILE', message: 'Form field "file" is required' } });
+    }
+    if (!ALLOWED_TYPES.includes(req.file.mimetype)) {
+      return res.status(415).json({ error: { code: 'UNSUPPORTED_TYPE', message: `Type ${req.file.mimetype} is not allowed` } });
+    }
+    try {
+      const id = `file_${crypto.randomUUID()}`;
+      const url = await putObject(id, req.file.buffer, req.file.mimetype);
+      res.status(201).json({
+        data: { id, url, filename: req.file.originalname, size: req.file.size, mime_type: req.file.mimetype },
+      });
+    } catch (e) {
+      next(e);
+    }
+  });
+});
+
+module.exports = router;
+```
+
+```js
+// src/middleware/auth.js
+const { verifyToken } = require('../auth/tokens');
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token || !verifyToken(token)) {
+    return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Missing or invalid token' } });
+  }
+  next();
+}
+
+module.exports = { requireAuth };
+```
 
 ## Skill Output
 
 # File Upload API
+Upload one PNG, JPEG, or PDF file (up to 10 MiB) and get back its ID and storage URL. For frontend engineers calling the API from the browser.
+**Last verified**: local `npm run dev`, [TODO: confirm commit] — [TODO: date of verification run]
 
-Upload files to be stored and served via CDN. Supports images and PDFs up to 10 MB.
+## Authentication
+Send a bearer token in the `Authorization` header: `Authorization: Bearer <TOKEN>`. A missing header, a header without the `Bearer ` prefix, or a token that fails verification returns `401 UNAUTHORIZED`. Authentication is checked before the file is read.
 
-## Quick Start
+- Local development: the token is `dev-token`.
+- Production: [TODO: confirm how frontend clients obtain a token — not in the provided code]
+
+Base URLs: `https://api.example.com` (production), `http://localhost:3000` (local, `npm run dev`). The examples use `$API_BASE`:
 
 ```bash
-curl -X POST https://api.example.com/v1/files \
+export API_BASE=http://localhost:3000
+export TOKEN=dev-token
+```
+
+## POST /v1/files
+Upload a single file as `multipart/form-data`.
+
+### Parameters
+| Name | In | Type | Required | Constraints |
+|---|---|---|---|---|
+| `Authorization` | header | string | Yes | `Bearer <TOKEN>` |
+| `file` | multipart form field | file | Yes | At most 10,485,760 bytes (10 MiB). The part's `Content-Type` must be `image/png`, `image/jpeg`, or `application/pdf`. |
+
+The type check reads the `Content-Type` the client declares for the part. The server does not inspect the file content. curl derives that type from the file extension. Browsers use `File.type`.
+
+### Request example
+curl:
+
+```bash
+curl -X POST "$API_BASE/v1/files" \
   -H "Authorization: Bearer $TOKEN" \
-  -F "file=@photo.jpg"
+  -F "file=@photo.png"
 ```
 
-**Response:**
+Browser (`fetch`):
+
+```javascript
+const API_BASE = 'http://localhost:3000';
+
+async function uploadFile(file, token) {
+  const body = new FormData();
+  body.append('file', file); // a File from <input type="file">
+  const res = await fetch(`${API_BASE}/v1/files`, {
+    method: 'POST',
+    // Do not set Content-Type yourself: fetch adds the multipart boundary.
+    headers: { Authorization: `Bearer ${token}` },
+    body,
+  });
+  const json = await res.json().catch(() => null); // undocumented errors may not be JSON
+  if (!res.ok) {
+    throw new Error(json?.error ? `${res.status} ${json.error.code}: ${json.error.message}` : `HTTP ${res.status}`);
+  }
+  return json.data;
+}
+```
+
+### Response — 201 Created
 ```json
 {
   "data": {
-    "id": "file_abc123",
-    "url": "https://cdn.example.com/files/file_abc123.jpg",
-    "filename": "photo.jpg",
-    "size": 204800,
-    "mime_type": "image/jpeg",
-    "created_at": "2024-01-15T10:30:00Z"
+    "id": "file_a98f2a14-5e6b-4eb2-9386-2fee4c82ba51",
+    "url": "<object URL returned by the storage layer>",
+    "filename": "photo.png",
+    "size": 2008,
+    "mime_type": "image/png"
   }
 }
 ```
 
-## Prerequisites
-
-- Valid API token with `files:write` scope
-- File must be one of: `image/png`, `image/jpeg`, `application/pdf`
-- File size must not exceed **10 MB**
-
-## Endpoint
-
-**`POST /v1/files`**
-
-Upload a single file using multipart form data.
-
-### Request
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `file` | File (multipart) | Yes | The file to upload |
-
-**Headers:**
-| Header | Value |
-|--------|-------|
-| `Authorization` | `Bearer {token}` |
-| `Content-Type` | `multipart/form-data` (set automatically by HTTP clients) |
-
-### Response
-
-**201 Created** — Upload successful
-
-```json
-{
-  "data": {
-    "id": "file_abc123",
-    "url": "https://cdn.example.com/files/file_abc123.jpg",
-    "filename": "original-name.jpg",
-    "size": 204800,
-    "mime_type": "image/jpeg",
-    "created_at": "2024-01-15T10:30:00Z"
-  }
-}
-```
+| Field | Meaning |
+|---|---|
+| `id` | `file_` followed by a random UUID |
+| `url` | URL returned by the storage layer. [TODO: confirm whether it is publicly readable and whether it expires. src/storage/s3.js was not provided] |
+| `filename` | The original filename sent by the client |
+| `size` | File size in bytes |
+| `mime_type` | The `Content-Type` the client declared for the part |
 
 ### Errors
+All errors below return `{ "error": { "code": "...", "message": "..." } }`. Checks run in this order: authentication, then size, then presence, then type.
 
-| Status | Code | Cause |
-|--------|------|-------|
-| 400 | `FILE_TOO_LARGE` | File exceeds 10 MB limit |
-| 400 | `UNSUPPORTED_TYPE` | File type not in allowed list |
-| 400 | `NO_FILE` | No file included in request |
-| 401 | `UNAUTHORIZED` | Missing or invalid token |
-| 413 | `PAYLOAD_TOO_LARGE` | Request body exceeds server limit |
+| Status | Code | Cause | Fix |
+|---|---|---|---|
+| 401 | `UNAUTHORIZED` | Missing, malformed, or invalid bearer token | Send `Authorization: Bearer <TOKEN>` with a valid token |
+| 413 | `FILE_TOO_LARGE` | File is larger than 10,485,760 bytes | Upload a file of at most 10 MiB |
+| 400 | `NO_FILE` | Multipart body with no file part (only text fields), or a body that is not multipart (for example JSON) | Send `multipart/form-data` with the file in a field named `file` |
+| 415 | `UNSUPPORTED_TYPE` | Declared part type is not `image/png`, `image/jpeg`, or `application/pdf` | Send an allowed type (see Troubleshooting for files with no extension) |
 
-**Error response format:**
-```json
-{
-  "error": {
-    "code": "FILE_TOO_LARGE",
-    "message": "File size 15.2 MB exceeds the 10 MB limit"
-  }
-}
-```
-
-## Code Examples
-
-**JavaScript (fetch)**
-```javascript
-async function uploadFile(file, token) {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const response = await fetch('https://api.example.com/v1/files', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: formData,
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error.message);
-  }
-
-  return response.json();
-}
-```
-
-**Python (requests)**
-```python
-import requests
-
-def upload_file(file_path: str, token: str) -> dict:
-    with open(file_path, 'rb') as f:
-        response = requests.post(
-            'https://api.example.com/v1/files',
-            headers={'Authorization': f'Bearer {token}'},
-            files={'file': f}
-        )
-    response.raise_for_status()
-    return response.json()['data']
-```
+Other failures go to the app's global error handler, and their status and body are not documented here: a file sent under a different field name, a malformed multipart body, or a storage error. [TODO: confirm global error handler behavior]
 
 ## Troubleshooting
+**`415 UNSUPPORTED_TYPE` with message `Type application/octet-stream is not allowed`** — The client could not determine a type, for example because the file has no extension or an unusual one. With curl, set the type explicitly: `-F "file=@scan;type=application/pdf"`. In the browser, check `file.type` before uploading and show the user an error when it is empty or not allowed.
 
-**`FILE_TOO_LARGE` even for small files**
-Check that you're not accidentally sending the file as base64 inside JSON — use
-multipart form data, not JSON body. Base64 encoding increases file size by ~33%.
+**`400 NO_FILE` even though a file was attached** — The file was sent as JSON or base64 instead of multipart. Use `FormData` and `body.append('file', file)`.
 
-**`UNSUPPORTED_TYPE` for a valid file**
-The type is detected from file content (magic bytes), not the filename extension.
-A `.jpg` file saved as PNG internally will be rejected. Re-export the file correctly.
+**`fetch` upload fails but the same file works with curl** — A manually set `Content-Type: multipart/form-data` header has no boundary, so the body cannot be parsed (the multipart parser raises "Multipart: Boundary not found", which goes to the global error handler). Remove the header and let `fetch` set it.
 
-**Upload succeeds but URL returns 403**
-The CDN URL is publicly accessible — if you're getting 403, the upload may still be
-processing. Wait 2-3 seconds and retry. For immediate access, use the `url` field
-only after a successful 201 response.
+## Writer's notes
+**Doc type / audience**: API reference / frontend engineers calling the API from the browser (stated)
+**Sources**: src/routes/files.js (limits, allowed types, status and error codes, response shape, check order); src/middleware/auth.js (401 behavior); user input (base URLs, local token, local S3 stub, what `putObject` returns)
+**Verified**: against the local server from `npm run dev`:
+- `photo.png` (2,008 bytes) → 201 with `size: 2008` and `mime_type: image/png`.
+- A file of exactly 10,485,760 bytes → 201. One of 10,485,761 bytes → 413 `FILE_TOO_LARGE`. The same oversized file with no token → 401, which confirms that authentication runs first.
+- `notes.txt` → 415 `Type text/plain is not allowed`.
+- A file with no extension → 415 `application/octet-stream`. The same file with `;type=application/pdf` → 201.
+- Multipart with only a text field, and a JSON body → 400 `NO_FILE`. A file under field `upload` → error passed to `next(err)`, not `NO_FILE`.
+- No `Authorization` header, and `Bearer nope` → 401.
+- The `uploadFile` snippet, run in Node 22 (which has `fetch`, `FormData`, and `File`) → 201, 415, and 401 as documented. Setting `Content-Type` manually → multipart "Boundary not found" error passed to `next(err)`.
+**Not run**: anything against production `https://api.example.com`, because there is no production token. The `fetch` snippet was not run in a real browser. Real S3 upload was not run because local uses a stub.
+**Open questions**:
+- How do frontend clients get a production token?
+- Is the returned `url` public and permanent?
+- What does the global error handler return for a wrong field name, a malformed multipart body, or a storage failure?
+- Discrepancy to raise with the owner: the type check trusts the client-declared part type. A 3-byte text file sent with `;type=application/pdf` was accepted as a PDF, and a PNG named `photo.jpg` was stored as `image/jpeg`. If content validation is intended, this is a code change and should go to `security-review`. The docs describe current behavior.
+- The code's limit is 10 MiB (10 × 1024 × 1024 bytes). The error message says "10 MB". The docs state the exact byte count to avoid ambiguity.

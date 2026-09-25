@@ -1,230 +1,107 @@
 ---
 name: refactor
-description: Use when user asks to refactor, clean up, simplify, or restructure code. Also use when code has unnecessary complexity, deep nesting, premature abstractions, or scattered related logic.
+description: Use when the user asks to refactor, clean up, simplify, restructure, or untangle existing code, or the code has deep nesting, duplication, god functions, premature abstractions, or scattered logic — and the goal is the same behavior with a clearer structure. Works in any language; modifies code in small verified steps behind a test safety net. Not for C#/.NET code (use `dotnet-code-refactor`), review-only feedback (use `code-review` or `code-audit`), fixing a bug (use `fix-bug` or `debug`), or finding or measuring performance problems (use `performance-review` or `algorithm-review`) — applying an already-verified, behavior-preserving rewrite from them is in scope.
 ---
 
-# Refactoring Specialist
+# Refactor
 
-Refactoring means changing code structure without changing behavior. Goal: **simpler, clearer, easier to change** — not more files or more abstractions.
+Change the structure of existing code without changing what it does. The goal is code that is simpler and easier to change — not more files, layers, or abstractions.
 
-## Core Principle
+**Refactoring = no observable behavior change.** Same return values, same errors (type and message), same side effects in the same order, same public API. Anything else — adding pagination or a transaction, changing an error message, trimming input, switching time zones, swapping a hash algorithm — is a behavior change. Never slip it into a refactor; report it separately (see Output format).
 
-**Simplify, don't just split.** Extracting small functions is not always good refactoring. Sometimes code is simpler when kept in one place.
+## Workflow (in order)
 
----
+### 1. Understand and diagnose
+- Read the code and its callers. Read 2–3 neighboring files to learn the project's conventions (naming, layout, error style, formatter). Project convention beats generic best practice.
+- If you cannot state what the code does, ask the user before touching it (use AskUserQuestion if available, otherwise ask in plain text).
+- List the smells with `file:line`, using the smell table below. If there are more than three, propose the top 2–3 and let the user choose; do not rewrite the whole file.
 
-## ANTI-PATTERNS: Common Refactoring Mistakes
+### 2. Classify risk for each move
 
-### 1. Extract everything into helpers
+| Risk | Typical moves | Handling |
+|---|---|---|
+| **SAFE** | Rename a local/private symbol; guard clauses over nested `if`s with identical outcomes; inline a single-use variable; remove code proven unreachable | Existing tests + compile/lint are enough |
+| **RISKY** | Extract function/class; move code across modules; rename an exported symbol whose callers are all in this repo (list them first); introduce a parameter object; replace a conditional with polymorphism; touch async/concurrent code | Characterization tests must exist and pass **before** the change |
+| **DANGEROUS** | Editing the logic of auth, credential handling, payments, DB schema or migrations, transactions/locks, message consumers, or security validation; changing a public API contract. (Moving such code verbatim within the same module, pinned by characterization tests, stays RISKY.) | Stop. Explain the risk, propose an approach, and get the user's confirmation first |
 
-```
-❌ WRONG: Extract a query into a separate helper
-// helpers/getUserQuery.ts
-export const buildGetUserQuery = (id) => db.query('SELECT * FROM users WHERE id = ?', [id])
+### 3. Check the safety net
+1. Find the tests for the target (follow the project's naming, e.g. `test_*.py`, `*.test.ts`, `*_test.go`) and run them once as a baseline. If the baseline fails, stop and ask — do not refactor on top of red tests.
+2. Judge quality: tests that only assert "was called" or mock the unit under test count as **no tests**.
+3. If coverage is missing for a RISKY move, write **characterization tests** first: call the current code with concrete inputs (valid, each error branch, edge cases, wrong types), assert whatever it actually returns, raises, and does — bugs and quirks included. They pass on the old code by construction; they must still pass after.
+4. Found a bug while characterizing? Pin it, do not fix it. List it under "Behavior changes recommended".
+5. If the user refuses tests, only SAFE moves are allowed, and the report must say "no safety net — behavior not verified".
 
-// service.ts
-import { buildGetUserQuery } from './helpers/getUserQuery'
-const user = await buildGetUserQuery(id)
+Present steps 1–3 as a plan (Status: Plan) and wait for confirmation when any move is DANGEROUS, when you had to pick among more than three smells, or when the user asked for a plan. Otherwise — the user asked you to refactor a specific target and every move is SAFE, or RISKY with characterization tests passing — apply directly.
 
-✅ RIGHT: Query belongs where it is used
-// service.ts
-const user = await db.query('SELECT * FROM users WHERE id = ?', [id])
-```
+### 4. Apply one move at a time
+- One smell, one move, then run the tests. Green → next move. Red → undo that move (revert your edit, or `git stash` it) and investigate. Never "fix" a characterization test to make it pass, and never run `git reset --hard` or other destructive commands.
+- Refactor first, feature/bug fix later — never in the same step or commit.
+- Keep behavior-bearing details byte-for-byte: error messages, defaults (`get('name', '')` is not `get('name') or ''`), evaluation and side-effect order, exception types, log text.
+- Do not change dependencies, import paths, or formatting of lines you are not refactoring. Run the project's formatter only if it already uses one.
 
-**Rule: Do not extract queries, config access, or one-time logic into helpers.** Only extract when that logic is genuinely used in 3+ places AND has a clear contract.
+### 5. Verify and report
+Re-run the full suite and the linter; re-read the diff as a reviewer. Anything in the diff that is not in the plan gets reverted or moved to its own change. Then write the report.
 
-### 2. Premature abstraction
+## Smells and the matching move
 
-```
-❌ WRONG: Create abstraction for a single use case
-class NotificationStrategy { ... }
-class EmailNotification extends NotificationStrategy { ... }
-// Only email exists — no SMS or push yet
+| Smell | Signal | Move |
+|---|---|---|
+| Long function | Does several distinct things (validate, persist, notify…) | Extract Function per responsibility |
+| Deep nesting | > 3 levels of `if`/loop | Guard clauses, early return |
+| Duplication | Same logic with the same contract in 3+ places | Extract one shared function |
+| Repeated expression | Same lookup or call written 3+ times in one scope | Introduce local variable |
+| Mysterious name | `data2`, `tmp`, `handle`, `process` | Rename to intent |
+| Magic literal | Unexplained number/string in logic | Named constant; enum for a closed set of variants |
+| Flag argument | Boolean parameter switches behavior | Split into two explicit functions |
+| Long parameter list | > 4 params that always travel together | Parameter object |
+| Speculative generality | Interface, strategy, or factory with one implementation | Inline it |
+| Middle man / pass-through wrapper | Function or class that only forwards calls | Remove it; call the target directly |
+| Repeated type switch | Same `switch` on a type in several places | Polymorphism (only if it repeats) |
+| Dead code | Unreferenced — verified by search, including reflection/DI/convention wiring | Delete (do not comment out) |
+| Business logic in a handler | Route/controller computes domain rules | Move to wherever the project keeps domain logic |
 
-✅ RIGHT: Write directly, refactor when a third use case appears
-await sendEmail(user.email, subject, body)
-```
+## Judgment rules
+1. **Every move needs a specific reason** ("removes 5 repeated lookups", "validation becomes testable alone"). "Cleaner" is not a reason.
+2. **Extract Function when the block is a distinct responsibility with a nameable contract**, even if used once. Do not extract a single-use snippet under ~5 lines — inline beats indirection.
+3. **Shared utilities and abstractions wait for the third real use.**
+4. **Keep queries and config access next to their only caller.** Select explicit columns (`SELECT id, email FROM users WHERE id = ?`), not `SELECT *`.
+5. **Wrap a dependency only when the wrapper adds value** — narrower interface, error translation, a test seam, or a swap that is actually needed.
+6. **Follow the project's layout.** Put new code where similar code already lives; never introduce a folder convention the codebase does not use. If there is none, colocate with the feature. (Example: a NestJS project with per-module `enums/` gets new enums there; a Python project that colocates keeps colocating.)
+7. **Create a new file only when the moved code has another caller or the project convention requires it.**
+8. **Do not refactor** working code nobody needs to change, code you do not understand, or pure style.
 
-### 3. Over-splitting functions into tiny pieces
+## Output format
 
-```
-❌ WRONG: 3-line logic split into 3 separate functions
-const isValid = validateAge(age) && validateName(name) && checkDuplicate(email)
+```markdown
+# Refactor: [target]
 
-// when validateAge is just: return age >= 18 && age <= 120
-// when validateName is just: return name.length > 0
-// → Loses context, requires jumping across 3 files to understand 1 line
+**Status**: [Plan — awaiting confirmation / Applied]
+**Safety net**: [✅ existing tests sufficient / ⚠️ characterization tests added first / ❌ none — user waived, behavior not verified]
+**Conventions followed**: [what you learned from neighboring code]
 
-✅ RIGHT: Inline simple logic
-const isValid = (age >= 18 && age <= 120) && name.length > 0 && !existingEmails.has(email)
-```
+## Smells
+| # | Smell | Location | Move | Risk |
+|---|---|---|---|---|
+| 1 | [specific smell] | [file:line] | [move] | [SAFE / RISKY / DANGEROUS] |
 
-### 4. Type definitions scattered outside module structure (TypeScript)
+## Steps
+### Step N — [Move]: [one-line summary]
+**Why**: [specific reason]
+**Change**: [before → after snippet or diff]
+**Verified by**: [test or command run, and its result; in a Plan, the test that will verify it]
 
-```
-❌ WRONG: Constants, regex, config defined at file top outside class
-// order.service.ts
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MAX_ITEMS = 50;
-enum Status { PENDING = 'PENDING', SHIPPED = 'SHIPPED' }
-interface OrderFilter { ... }
+## Behavior verification
+- [commands run and results; concrete "input → same output/error before and after" evidence]
 
-@Injectable()
-export class OrderService { ... }
+## Deliberately not changed
+- [what looked tempting to extract or clean, and why it was left alone]
 
-❌ WRONG: Hardcoded string literals instead of enum
-if (order.status === 'PENDING') { ... }
-
-✅ RIGHT: Each artifact in its dedicated module folder
-// order/constants/order.constant.ts
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-export const MAX_ITEMS = 50;
-
-// order/enums/status.enum.ts
-export enum Status { PENDING = 'PENDING', SHIPPED = 'SHIPPED' }
-
-// order/interfaces/order-filter.interface.ts
-export interface OrderFilter { ... }
-```
-
-**Rule (applies only to projects that already use this layout — NestJS, Angular, and similar layered module structures):** definitions shared beyond one file — constants, regex, config values, enums, interfaces, types — belong in the project's dedicated module folders (`constants/`, `enums/`, `interfaces/`, `types/`).
-
-**Check the project's existing layout first.** If the codebase colocates types next to their usage (typical in Go, Python, Rust, and most React projects), keep colocating — moving them into folders the project does not use is churn, not refactoring. A type used in exactly one file stays in that file regardless of convention; see Iron Rule 5.
-
-### 5. Decorators duplicated instead of composed (NestJS / decorator frameworks)
-
-```
-❌ WRONG: Same decorator stack copy-pasted across 10 controllers
-@UseGuards(JwtGuard)
-@Roles(Role.ADMIN)
-@ApiBearerAuth()
-async someMethod() { ... }
-
-✅ RIGHT: Create a shared custom decorator
-// decorators/admin.decorator.ts
-export const AdminRoute = () => applyDecorators(
-  UseGuards(JwtGuard), Roles(Role.ADMIN), ApiBearerAuth()
-)
-
-@AdminRoute()
-async someMethod() { ... }
+## Behavior changes recommended (not applied)
+### [severity] [title]
+**Location**: [file:line]
+**Problem**: [what is wrong today]
+**Proposed change**: [what to do, as its own change]
+**Migration / rollout**: [data migration, compatibility, caller updates, or "none"]
 ```
 
-**Rule:** When the same decorator combination appears on 3+ methods, extract into a custom composed decorator. Applies to NestJS and any framework using decorators.
-
-### 6. Wrappers that add no value
-
-```
-❌ WRONG: Wrap a library just to wrap it
-// utils/logger.ts
-export const log = (msg) => console.log(msg)  // Adds nothing
-
-✅ RIGHT: Only wrap when adding real behavior
-// Valuable wrapper: adds structured logging, correlation ID
-export const log = (msg, ctx) => logger.info({ msg, requestId: ctx.requestId, timestamp: Date.now() })
-```
-
----
-
-## WHEN TO REFACTOR (and when not to)
-
-### Refactor when
-
-| Signal | Action |
-|--------|--------|
-| Function > 50 lines AND does multiple distinct things | Extract by responsibility, not by line count |
-| Logic duplicated in 3+ places with the same contract | Extract shared function |
-| Deep nesting (> 3 levels) | Early return, guard clause, flatten |
-| Complex conditional | Extract into a well-named boolean variable (not a function) |
-| God class / God function | Split by domain boundary |
-| Dead code | Delete entirely — do not comment out |
-| Confusing names | Rename to clarify intent |
-| Magic values (strings/numbers) in logic | Enum for variant sets (`enums/`), constant for fixed values (`constants/`) |
-| Type artifacts at file top, shared across files, in a project that uses module folders | Move to the project's `enums/`, `interfaces/`, `types/`, `constants/` folder |
-| Same decorator stack on 3+ methods | Extract to shared custom decorator |
-| Business logic in controller/route handler | Move to service layer — controllers only route and validate |
-| Boolean flag parameter that changes behavior | Split into two explicit functions |
-| List endpoint without pagination | Add pagination — unbounded queries are a production time bomb |
-| Multi-step DB writes without transaction | Wrap in transaction — partial writes corrupt data |
-| Same value/logic defined in multiple places | Single source of truth — one change should require one edit |
-
-### Do NOT refactor when
-
-| Signal | Reason |
-|--------|--------|
-| Short function that "could be split" | If readable in one pass → leave it |
-| Query / DB access | Keep close to where it's used — don't extract to helper |
-| Logic used in only one place | Inline is better than abstract |
-| Working code nobody needs to change | "If it ain't broke, don't refactor it" |
-| Style preference (tabs vs spaces, quotes) | That's formatting, not refactoring |
-
----
-
-## REFACTORING MOVES (prioritized by impact)
-
-### Tier 1: Almost always good
-- **Rename** — clearer intent
-- **Early return / Guard clause** — reduce nesting
-- **Remove dead code** — delete entirely, don't comment out
-- **Replace magic values** — choose the right destination:
-  - **Enum** (`enums/`): finite set of variants used in comparisons/switches — `Plan.PRO`, `Status.ACTIVE`, `Role.ADMIN`
-  - **Constant** (`constants/`): single fixed configuration value — `MAX_RETRIES = 3`, `TIMEOUT_MS = 5000`, `DATE_FORMAT = 'YYYY-MM-DD'`
-- **Add explicit return types** — makes function contract visible; prevents silent type drift
-- **Inline trivial function** — remove unnecessary indirection
-
-### Tier 2: Good in the right context
-- **Extract Method** — ONLY when function clearly does multiple distinct things
-- **Extract Variable** — complex expression → named variable
-- **Introduce Parameter Object** — when > 4 params AND they always travel together
-- **Replace inheritance with composition** — when hierarchy > 2 levels
-
-### Tier 3: Be careful — easy to over-engineer
-- **Strategy/Factory pattern** — ONLY when there are 3+ real variants
-- **Extract shared utility** — ONLY when used in 3+ places with the same contract
-- **Introduce interface/abstraction** — ONLY when there is a real need to swap implementations
-
----
-
-## PROCESS
-
-1. **Read the code** — understand full context before changing anything
-2. **Identify real smells** — distinguish real problems from style preferences
-3. **Check test coverage** — do not refactor untested code; write tests first
-4. **Small steps** — each commit is one refactoring move; run tests after each step
-5. **Verify** — confirm behavior is unchanged and the code is genuinely simpler
-
-## OUTPUT FORMAT
-
-```
-## Refactoring Plan: [Component]
-
-### Issues found
-| Smell | File:Line | Severity |
-|-------|-----------|----------|
-| [Specific description] | [location] | [High/Medium/Low] |
-
-### Refactoring steps (in order)
-1. **[Move type]**: [Description]
-   - Why: [Specific reason — not just "cleaner"]
-   - Before → After: [code sketch]
-   - Test to verify: [which test confirms behavior is preserved]
-
-### Not refactoring
-- [List code that might seem extractable but SHOULD NOT be, and why]
-
-### Risk
-- [Risks and mitigations]
-```
-
-## Iron Rules
-
-1. **Every refactoring move must have a specific reason** — "cleaner" is not a reason
-2. **Three similar lines beat one premature abstraction** — wait for the third use case
-3. **Queries, config, one-time logic: do NOT extract to helper** — keep close to usage
-4. **Inline > Extract when a function is used in only one place and is < 5 lines**
-5. **Do not create new files unless truly necessary** — fewer files = less complexity
-6. **Test first, refactor second** — no tests means write tests first; that IS part of refactoring
-7. **Follow the project's existing layout for shared types** — in a project with `enums/`, `interfaces/`, `types/`, `constants/` folders, shared definitions go there; in a project that colocates, they stay colocated. Never introduce a folder convention the codebase does not already use.
-8. **Enum vs Constant** — finite variant set → `enums/`; single fixed value → `constants/`
-9. **Single source of truth** — same logic in two places = refactor into one; same value in two places = extract to shared definition
-10. **Controllers are thin** — routing and input validation only; all business logic lives in services
+Severity for recommendations: 🔴 BLOCKER (security hole, data loss/corruption, crash on reachable input, broken contract) / 🟠 MAJOR (real bug or design flaw that will bite soon) / 🟡 MINOR (maintainability or robustness issue worth fixing) / 💭 NIT (taste). Characterization tests added in step 3 of the workflow appear as Step 1. Omit a section that has no content instead of writing "none". A worked example is in `examples/example.txt` (if installed). `template.md` mirrors this format.

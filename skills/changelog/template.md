@@ -1,27 +1,49 @@
-# Changelog Template
+# Changelog: [version] — [YYYY-MM-DD | UNKNOWN]
 
-## [Version] - [Date]
+**Range**: [from]..[to] — [N] commits, [M] PRs
+**Version check**: [OK — requires <major|minor|patch> | ⚠ MISMATCH — <entries> are breaking; SemVer requires <X.0.0> | Unreleased — requires <bump> (next: <X.Y.Z> after <last tag>)]
 
-### Breaking Changes
-- **[Area]**: [Change] — Migration: [steps]
+## Developer Changelog
+
+## [version] - [YYYY-MM-DD]
 
 ### Added
-- **[Area]**: [Feature] (#PR)
+- [Change] (#PR)
 
 ### Changed
-- **[Area]**: [Improvement] (#PR)
-
-### Fixed
-- **[Area]**: [Bug fix] (#PR)
+- [Change] (#PR)
 
 ### Deprecated
-- **[Area]**: [What] — Replacement: [X] — Removal: [version]
+- [What] — use [replacement]. Removal: [version | UNKNOWN] (#PR)
 
-## Developer Notes
-### Migration Steps
-1. [Command]
+### Removed
+- **BREAKING:** [What was removed]. Migration: [step] (#PR)
 
-### Dependency Updates
-| Package | From | To | Reason |
-|---------|------|----|--------|
-| | | | |
+### Fixed
+- [Symptom that no longer occurs] (#PR)
+
+### Security
+- [Vulnerability addressed, CVE/advisory if given] (#PR)
+
+## Release Notes
+
+### ⚠ Action required
+- [Who is affected and what they must do]
+
+### New
+- [Plain-language description]
+
+### Improved
+- [Plain-language description]
+
+### Fixed
+- [Plain-language description]
+
+### Security
+- [Plain-language description]
+
+## Open Questions
+1. [Question — SHA/PR, what is known, what is needed]
+
+## Excluded
+- [SHA or #PR] [subject] — [reason]
