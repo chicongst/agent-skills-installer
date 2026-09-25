@@ -568,8 +568,7 @@ Scope:  $SCOPE
 Root:   $root
 Bundle: $BUNDLE
 
-Installed: $INSTALLED, skipped (already present): $SKIPPED
-$(if [[ "$SKIPPED" -gt 0 ]]; then echo "Re-run with --force to update skipped skills to this version."; fi)
+Installed: $INSTALLED, skipped (already present): $SKIPPED$(if [[ "$SKIPPED" -gt 0 ]]; then printf '\n%s' "Re-run with --force to update skipped skills to this version."; fi)
 
 Skills in bundle:
 $(skills_for_bundle "$BUNDLE" | sed 's/^/  - /')

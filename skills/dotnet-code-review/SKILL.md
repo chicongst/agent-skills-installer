@@ -1,6 +1,6 @@
 ---
 name: dotnet-code-review
-description: Use when reviewing C#, .NET, or ASP.NET Core code — a class, file, diff, or module — or when the user pastes C# and asks for feedback, issues, or improvements without saying "review". Checks .NET slop (skipped tests, #pragma/NoWarn, `!` abuse, swallowed exceptions) and async, DI, EF Core, disposal, ASP.NET Core security, and logging pitfalls; reports BLOCKER/MAJOR/MINOR/NIT findings with fixes. Read-only. Not for other languages (use `code-review`), PR merge-readiness (use `pr-review`), scored multi-dimension audits (use `code-audit`), or applying fixes (use `dotnet-code-refactor`).
+description: "Use when reviewing C#, .NET, or ASP.NET Core code — a class, file, diff, or module — or when the user pastes C# and asks for feedback, issues, or improvements without saying \"review\". Checks .NET slop (skipped tests, #pragma/NoWarn, `!` abuse, swallowed exceptions) and async, DI, EF Core, disposal, ASP.NET Core security, and logging pitfalls; reports BLOCKER/MAJOR/MINOR/NIT findings with fixes. Read-only. Not for other languages (use `code-review`), PR merge-readiness (use `pr-review`), scored multi-dimension audits (use `code-audit`), or applying fixes (use `dotnet-code-refactor`)."
 ---
 
 # .NET Code Review
