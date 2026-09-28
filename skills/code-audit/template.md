@@ -1,7 +1,8 @@
 # Code Audit: [Target]
 
-## Verdict
-[READY / NEEDS WORK / BLOCKED] — [one sentence]
+**Verdict**: [BLOCKED / NEEDS WORK / READY] — [one sentence tied to the verdict rules]
+**Blast radius**: [what breaks if this is wrong, and for whom]
+**Coverage**: [read in full: … · sampled: … · not read: …]
 
 ## Scorecard
 
@@ -26,36 +27,35 @@
 | 17 | Database Design | x/10 | |
 | 18 | API Design | x/10 | |
 | 19 | Domain Modeling | x/10 | |
-| 20 | Overall Code Quality | x/10 | |
+| 20 | Overall Code Quality | x/10 | [median of scored dimensions = n; cap applied → x] |
+
+(Use `N/A — reason` or `Not requested` in the Score column where they apply.)
 
 ## Findings
 
-### 🔴 BLOCKER: [Title] [verified?]
-**Dimension**: [which of the 20]
-**Location**: [file:line]
+### 🔴 BLOCKER
+#### [B1] [Title] [verified]
+**Dimension**: [one home dimension]
+**Location**: [file:line, every location if merged]
 **Problem**: [what's wrong]
 **Risk**: [concrete failure — input → wrong output/crash/leak]
-**Fix**: [snippet or one-line direction]
+**Fix**: [minimal snippet or one-line direction]
 
-### 🟠 MAJOR: [Title]
-**Dimension**: [...]
-**Location**: [file:line]
-**Problem**: [...]
-**Fix**: [...]
+### 🟠 MAJOR
+[Same fields, IDs M1, M2…]
 
-### 🟡 MINOR: [Title]
-**Location**: [file:line]
-**Note**: [...]
+### 🟡 MINOR
+[Same fields; Fix may be one line. IDs m1, m2…]
 
-### 💭 NIT: [Title]
-**Note**: [...]
+### 💭 NIT
+- `file:line` — [one line]
+
+## Questions
+- [Question for the author — which score or finding it could change]
 
 ## What's Good
-- [Genuine strength to preserve]
+- [Specific strength to preserve]
 
 ## Action Plan
-1. [Highest-priority fix or root-cause group] — [rough effort]
+1. [Highest-priority fix or root-cause group] — closes [IDs] — [rough effort]
 2. [...]
-
-## Verdict
-[READY / NEEDS WORK / BLOCKED]

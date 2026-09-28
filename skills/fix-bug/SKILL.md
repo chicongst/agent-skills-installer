@@ -1,6 +1,6 @@
 ---
 name: fix-bug
-description: Use when the user reports a bug with little context — the entry point for bug reports — an error message, a stack trace, "it's not working", "fix this", "why is this failing", "sửa lỗi này", "fix lỗi", "tại sao bị lỗi". Gathers scope, data flow, and history, asks only for what the code can't tell you, tries to reproduce, then applies a minimal fix with an explicit confidence level and a regression test. Not for a failure already reproducible that needs hypotheses eliminated — use `debug`; not for a live production incident — use `sre-engineering`.
+description: Use when the user reports a bug with little context — the entry point for bug reports such as an error message, a stack trace, "it's not working", "fix this", "why is this failing", "sửa lỗi này", "fix lỗi", "tại sao bị lỗi". Gathers scope, data flow, and history, asks only for what the code can't tell you, tries to reproduce, then applies a minimal fix with an explicit confidence level and a regression test. Not for a failure already reproducible that needs hypotheses eliminated — use `debug`; not for a live production incident — use `sre-engineering`.
 ---
 
 # Fix Bug
@@ -14,7 +14,7 @@ Turn a thin bug report into a verified fix: gather context, reproduce, fix at th
 3. **Root cause ≠ fix.** The root cause is a fact about the code, data, or environment; the fix is the change you make (see step 5). Never write a remedy in the root-cause field.
 4. **Confidence gates the change** (see Confidence levels). Apply code only at High, or at Medium after the user confirms the open assumption.
 5. **Minimal fix at the cause.** No retry around a race, no `try/catch` or null-check that hides a wrong value, no drive-by refactoring. If the fix changes behavior for other callers, call it out separately.
-6. **No destructive or state-changing moves without asking** — no `git reset`, `git checkout .`, `git clean`, data deletion, or restarting shared services. `git stash` or a separate worktree protects uncommitted work; history inspection (`git log`, `git blame`, `git diff`) is read-only and fine.
+6. **No destructive or state-changing moves without asking** — no `git reset`, `git checkout .`, `git clean`, data deletion, or restarting shared services. Ask before `git stash` too — it hides the user's uncommitted work; a separate worktree (`git worktree add`) is the non-intrusive option. History inspection (`git log`, `git blame`, `git diff`) is read-only and fine.
 7. **Follow the project's existing conventions** for code style, error handling, and test layout.
 
 ## Fast path — obvious bugs
@@ -75,7 +75,7 @@ If it won't reproduce, say so, list what differs between your attempt and the re
 
 ### 6. Regression test and verification
 
-- Add a test that reproduces the bug. It must fail on the old code and pass on the new — run it both ways (e.g. `git stash push -- <fixed files>` (add `-u` if the fix created a file), run the test, `git stash pop`; the new test file stays in place).
+- Add a test that reproduces the bug. It must fail on the old code and pass on the new. If you wrote it in step 3 and saw it fail before the fix, that is the "before" run. Otherwise temporarily undo only your own fix edit (you know the exact lines), run the test, and re-apply the edit — don't use `git stash` or `git checkout` for this, since they also move the user's uncommitted changes in the same files.
 - Rerun the original reproduction; run the surrounding test suite (and lint/type-check if the project has them).
 
 ## Confidence levels
@@ -122,4 +122,6 @@ Every Medium or Low report ends with the specific questions or checks that would
 - [question or check that would raise confidence]
 ```
 
-For the fast path, use only the title, Confidence, Root cause, Fix, and a one-line Verification. Omit sections that don't apply rather than filling them with "N/A".
+For the fast path, use only the title, Confidence, Root cause, Fix, and a one-line Verification. Omit sections that don't apply rather than filling them with "N/A". `template.md` mirrors this format. A worked example is in `examples/example.txt` (if installed).
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

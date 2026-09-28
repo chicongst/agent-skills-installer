@@ -1,6 +1,6 @@
 ---
 name: security-review
-description: Use when reviewing code, a diff, or a service specifically for security weaknesses — injection, authn/authz and object-level access (IDOR), SSRF, CSRF, XSS, deserialization, mass assignment, path traversal, secrets, crypto and password storage, sensitive data in logs, dependency risk, rate limiting, headers/CORS — with fixes and regression tests. Not for general bugs (use `code-review`), PR merge readiness (`pr-review`), a scored multi-dimension audit (`code-audit`), or general C#/.NET review (`dotnet-code-review`).
+description: Use when reviewing code, a diff, or a service specifically for security weaknesses — injection, authn/authz and object-level access (IDOR), SSRF, CSRF, XSS, deserialization, mass assignment, path traversal, XXE, file upload, open redirect, race conditions and business logic, tenant isolation, prompt injection, secrets, crypto and password storage, sensitive data in logs, dependency risk, rate limiting, headers/CORS — with fixes and regression tests. Not for general bugs (use `code-review`), PR merge readiness (`pr-review`), a scored multi-dimension audit (`code-audit`), or general C#/.NET review (`dotnet-code-review`).
 ---
 
 # Security Review
@@ -21,9 +21,9 @@ Severity is the impact if the weakness is triggered on a reachable path.
 
 | Tag | Meaning | Typical examples |
 |---|---|---|
-| 🔴 **BLOCKER** | Security hole, data loss/corruption, crash on reachable input, or broken contract. Must fix before merge/release. | Injection, missing authz/IDOR, privilege escalation, secret in code, untrusted deserialization, SSRF |
+| 🔴 **BLOCKER** | An untrusted actor can read, change, or destroy data they shouldn't, act as someone else, or run code/queries on the server. Must fix before merge/release. | Injection, missing authz/IDOR, privilege escalation, secret in code, untrusted deserialization, SSRF |
 | 🟠 **MAJOR** | Real weakness or missing validation at a trust boundary that will bite soon. | Weak password hashing, secrets/PII in logs or responses, no CSRF on cookie-auth writes, credentialed CORS to any origin |
-| 🟡 **MINOR** | Hardening or robustness gap worth fixing. | Stack traces to clients, no session expiry, missing security headers |
+| 🟡 **MINOR** | Hardening gap: no direct exploit, but it removes a layer of defense or eases another attack. | Stack traces to clients, no session expiry, missing security headers |
 | 💭 **NIT** | Taste/hygiene. One line. | Framework banner header |
 
 **Exploitability** is a separate note per finding: **High** (anonymous or any logged-in user), **Medium** (needs a role, user interaction, or unusual config), **Low** (needs insider access or another weakness first). Drop one severity level only when you can state the precondition that keeps untrusted actors off the path.
@@ -43,7 +43,7 @@ Walk every checklist row against the map. Clean rows go under **Checked OK** wit
 - Tag confirmed findings `[verified]`; move what you cannot substantiate to **Questions**.
 
 ### 4. Rank and report
-Merge findings with one root cause (list every location). Order by severity, then exploitability, then blast radius, and renumber in that order. Each BLOCKER/MAJOR gets a minimal fix snippet and a regression test; a MINOR may have a one-line fix. **Verdict:** REQUEST CHANGES if any BLOCKER or MAJOR; APPROVE WITH COMMENTS if MINORs only; APPROVE if NITs or nothing.
+Merge findings with one root cause (list every location). Order by severity, then exploitability, then blast radius, and renumber in that order. Each BLOCKER/MAJOR gets a minimal fix snippet and a regression test; a MINOR may have a one-line fix. **Verdict** (same scale as `code-review`, rules in order): REQUEST CHANGES if any BLOCKER or MAJOR; NEEDS DISCUSSION if an open Question (a missing gateway, middleware, or deployment fact) could turn a finding into a BLOCKER; APPROVE WITH COMMENTS if MINORs remain; APPROVE if NITs or nothing.
 
 ## Checklist
 
@@ -59,6 +59,12 @@ Merge findings with one root cause (list every location). Order by severity, the
 | **CSRF** | Cookie-authenticated state changes without token or origin check; state changes on GET | `SameSite` cookies plus framework CSRF tokens or Origin checks; no writes on GET |
 | **XSS** | Untrusted data rendered raw (`innerHTML`, `dangerouslySetInnerHTML`, `v-html`, the Jinja `safe` filter, string-built HTML) | Auto-escaping templates, `textContent`; sanitize rich text with a maintained sanitizer; CSP as a second layer |
 | **Insecure deserialization** | Native object deserializers on untrusted data (`pickle`, Java `ObjectInputStream`, PHP `unserialize`, .NET `BinaryFormatter`, full YAML loaders) | JSON plus schema validation; safe loaders (`yaml.safe_load`) |
+| **XML external entities (XXE)** | XML parsers with DTD/external entity resolution on untrusted input (SOAP, SAML, SVG, Office files) | Disable DTDs and external entities in the parser config; prefer JSON |
+| **Open redirect** | Redirect target taken from a query param or header (`?next=`, `returnUrl`) | Allowlist of paths or hosts; accept only relative paths that start with a single `/` |
+| **File upload** | Type trusted from filename or `Content-Type`; no size limit; uploads served inline from the app's origin (HTML/SVG → stored XSS); original filename used on disk | Check content (magic bytes) against an allowlist, size limit, store outside the web root under a generated name, serve with `Content-Disposition: attachment` or from a separate domain |
+| **Race conditions / business logic** | Check-then-act on balances, coupons, stock, invites, or one-time tokens (double spend, reuse under concurrency); steps of a flow callable out of order; client-sent prices or totals trusted | Atomic conditional update or row lock, unique constraints, single-use tokens consumed in the same transaction; recompute totals server-side; enforce the flow's state machine |
+| **Multi-tenant isolation** | Queries, caches, file paths, or background jobs keyed without the tenant; tenant ID taken from the request body instead of the session | Tenant from the authenticated context only; tenant in every query, cache key, and storage path; database-level enforcement (RLS / composite FKs, see `db-design`) |
+| **LLM / prompt injection** | Untrusted text (user input, fetched pages, documents, tool results) placed into a model prompt that can call tools, read other users' data, or whose output is rendered or executed | Treat model output as untrusted input (escape, validate, never `eval`); give tools the caller's permissions, not the service's; require confirmation for side-effecting tool calls; keep secrets out of prompts |
 | **Path traversal** | File paths built from input (downloads, upload names, archive extraction) | Map IDs to server-side names, or resolve the path and check it stays under the base directory |
 | **Secrets** | Keys/passwords in code, committed config, client bundles, error messages | Secret manager or environment, fail fast if missing; rotate anything ever committed (history keeps it) |
 | **Crypto & passwords** | Plain or fast hashes (MD5/SHA-*) for passwords; `Math.random`/`random` for tokens; non-constant-time secret comparison; custom crypto; TLS verification disabled | argon2id/scrypt/bcrypt with per-user salt; CSPRNG; constant-time compare; authenticated encryption (e.g., AES-GCM) from a vetted library |
@@ -76,7 +82,7 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 
 **Scope:** [files and entry points reviewed]
 **Findings:** 🔴 [n] · 🟠 [n] · 🟡 [n] · 💭 [n]
-**Verdict:** [REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE]
+**Verdict:** [REQUEST CHANGES / NEEDS DISCUSSION / APPROVE WITH COMMENTS / APPROVE]
 
 ## Summary
 [2–4 sentences: what the code does, the most serious weakness, why this verdict.]
@@ -134,3 +140,5 @@ Omit a severity section with no findings; write "None" under the other sections 
 - **Snippet without callers or middleware:** state the dependency ("BLOCKER if this route is not behind the admin guard").
 - **Large codebase:** map all entry points, then go deep on auth, money and data-export paths first.
 - **One area only** (e.g., "just check auth"): do that area plus secrets; list the rest under Not assessed.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

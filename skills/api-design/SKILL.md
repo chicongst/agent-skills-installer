@@ -1,6 +1,6 @@
 ---
 name: api-design
-description: Use when designing a new HTTP/REST API or reviewing an API contract (OpenAPI spec, route list, endpoint handlers) — resources and URLs, status codes, error format, pagination, idempotency, concurrency control, auth, rate limiting, versioning and deprecation. Not for overall system or service architecture (use `architect`), database schema and indexes (use `db-design`), writing reference docs for an API that is already designed (use `docs-writer`), or a security audit of the implementation (use `security-review`).
+description: Use when designing a new HTTP/REST API or reviewing an API contract (OpenAPI spec, route list, endpoint handlers) — resources and URLs, status codes, error format, pagination, idempotency, concurrency control, auth, rate limiting, versioning and deprecation, and outbound webhooks. Not for overall system or service architecture (use `architect`), database schema and indexes (use `db-design`), writing reference docs for an API that is already designed (use `docs-writer`), or a security audit of the implementation (use `security-review`).
 ---
 
 # API Design
@@ -85,6 +85,15 @@ Status code rules:
 - **Breaking**: removing/renaming a field or endpoint, changing a type or meaning, adding a required request field, adding an enum value clients must handle, tightening validation, changing status codes or error `type`s. **Non-breaking**: new endpoints, new optional request fields, new response fields.
 - To retire something: send `Deprecation: @<unix-seconds>` (RFC 9745, a structured-field Date) plus `Link: <doc-url>; rel="deprecation"`, and `Sunset: <HTTP-date>` (RFC 8594) no earlier than the deprecation date. Publish a migration guide before the Deprecation date.
 
+### Webhooks (outbound events)
+Only when the API pushes events to consumers.
+- **Payload**: an envelope with a unique event `id`, `type` (e.g. `order.paid`), `created_at`, and the resource or its ID. Version event types the same way as the API; adding fields is non-breaking, removing or renaming them is not.
+- **Authenticity**: sign each delivery with HMAC-SHA256 over the timestamp plus the raw body, in a header (e.g. `Webhook-Signature: t=<unix>,v1=<hex>`); receivers verify with a constant-time compare and reject timestamps outside a tolerance window (e.g. 5 min — a choice, state it) to stop replays. Support two active secrets during rotation.
+- **Delivery**: at-least-once. Retry non-2xx and timeouts with exponential backoff over a documented period, then mark the endpoint failing and notify the owner. Receivers must dedupe on the event `id` and must not rely on ordering — include enough to re-fetch current state.
+- **Receiver contract**: respond `2xx` fast and process asynchronously; document the delivery timeout. Offer a way to list and redeliver past events.
+- **Security**: HTTPS endpoints only; resolve and block private/loopback/metadata IPs when calling consumer URLs (SSRF, see `security-review`).
+- The Standard Webhooks spec (standardwebhooks.com) defines one such header set; label it as a choice, not an RFC.
+
 ## Review mode
 
 Check the contract against every Defaults section above (as adapted to the project's conventions) and against itself. Tag each finding with the shared severity scale:
@@ -140,6 +149,9 @@ Omit **Findings** in design mode. In review mode, fill the other sections with t
 ## Versioning & Deprecation
 [What counts as breaking, deprecation/sunset process and headers, migration guide location]
 
+## Webhooks (if the API emits events)
+[Event types, envelope, signature scheme and header, retry schedule, dedupe key, redelivery]
+
 ## Design Decisions
 **[Decision]** — [why, and the alternative rejected]
 
@@ -156,3 +168,5 @@ Omit **Findings** in design mode. In review mode, fill the other sections with t
 ## Rules
 1. Examples use only facts from the user's input; invented numbers (limits, expiries, windows) are labelled as assumptions.
 2. Cite RFCs only for what they actually define; label IETF drafts as drafts.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

@@ -1,6 +1,6 @@
 ---
 name: architect
-description: "Use when designing a new system or service, choosing between architectural options (monolith vs. service, sync vs. async, which broker/store), reviewing the architecture of a design doc, or planning how a system handles growth, failure, consistency and migration. Produces a numbers-driven design: options, decision, failure modes, rollout, cost. Not for endpoint/contract design (use `api-design`), schemas and indexes (`db-design`), step-by-step data migrations (`migration-safety`), go/no-go on a release (`release-readiness`), or live incidents and alert tuning (`sre-engineering`)."
+description: "Use when designing a new system or service, choosing between architectural options (monolith vs. service, sync vs. async, which broker/store), reviewing the architecture of a design doc, or planning how a system handles growth, failure, consistency, security and migration. Produces a numbers-driven design: options, decision, failure modes, rollout, cost. Not for endpoint/contract design (use `api-design`), schemas and indexes (`db-design`), step-by-step data migrations (`migration-safety`), go/no-go on a release (`release-readiness`), or live incidents and alert tuning (`sre-engineering`)."
 ---
 
 # Architect
@@ -45,16 +45,25 @@ For each dependency, walk: down, slow, erroring, returning duplicates, backlog f
 - Bulkheads: separate queues/pools so bulk traffic cannot starve latency-sensitive traffic.
 - A circuit breaker that stops consuming beats burning retry budgets during a long provider outage.
 
-### 6. Observability
+### 6. Security & compliance
+- **Trust boundaries**: mark on the data flow where untrusted input enters (public clients, partners, webhooks, uploads) and where calls cross networks or accounts.
+- **Identity**: how users authenticate at the edge, how services authenticate to each other (mTLS, workload identity, signed tokens), and where authorization is enforced — at the service that owns the data, not only at the gateway.
+- **Data classification**: which stores hold PII, credentials, payment or health data; encryption in transit and at rest; who can read production data; retention and deletion path (schema details → `db-design`).
+- **Tenancy**: how one tenant's data, compute, and quotas are isolated from another's, and which layer enforces it.
+- **Secrets**: where they live (secret manager, not config files or images) and how they rotate.
+- **Compliance & residency**: only constraints the input names (region, GDPR, PCI, SOC 2, HIPAA) — each one's effect on the design; ask when the product obviously handles regulated data and none is stated.
+- **Abuse**: the cheapest way to hurt the system (unauthenticated expensive endpoint, fan-out amplification, unbounded uploads) and the limit that stops it. Implementation-level review → `security-review`.
+
+### 7. Observability
 Tie every alert to an SLO or a loss condition: queue age vs. latency SLO, dead-letter depth for must-not-lose data, outbox lag. Name the metric, threshold and who is paged. Propagate a correlation id from the originating request to the final side effect.
 
-### 7. Rollout & migration
+### 8. Rollout & migration
 - Phase so each step is independently shippable and reversible; give the validation gate and rollback for each.
 - Moving a side effect (sending email, charging a card) must never run both paths for the same item — decide per item at write time (flag per type/tenant), not by shadow traffic.
 - Name the irreversible step (deleting the old path, dropping a table) and its entry criteria.
 - Schema changes: route details to `db-design` / `migration-safety`; ship-day checks to `release-readiness`.
 
-### 8. Cost
+### 9. Cost
 Derive from the numbers: request/message counts per month, storage growth, compute sized to the drain rate. If you do not know a price, give the billable quantity and say "multiply by current list price". Include operational cost: new systems someone must be on call for.
 
 ## Rules
@@ -98,7 +107,7 @@ Derive from the numbers: request/message counts per month, storage growth, compu
 - **Scaling**: [unit of scale and what drives it]
 
 ## Data Flow
-[diagram + numbered steps for the primary path]
+[diagram (a mermaid `flowchart` renders in most viewers; ASCII otherwise) + numbered steps for the primary path]
 
 ## Data Consistency
 - **Source of truth**:
@@ -106,6 +115,14 @@ Derive from the numbers: request/message counts per month, storage growth, compu
 - **Delivery semantics & idempotency**: [where duplicates arise, dedupe key]
 - **Ordering**:
 - **What can be lost**: [none / bounded + justification + how counted]
+
+## Security & Compliance
+- **Trust boundaries**: [where untrusted input enters]
+- **Identity & authz**: [user auth, service-to-service auth, where authorization is enforced]
+- **Sensitive data**: [class → store → encryption, access, retention]
+- **Tenancy isolation**: [mechanism and enforcing layer, or "single-tenant"]
+- **Secrets**: [store and rotation]
+- **Compliance / residency**: [named constraints and their effect, or "none stated"]
 
 ## Failure Modes
 | Failure | Impact | Detection | Mitigation | Recovery |
@@ -132,3 +149,5 @@ Derive from the numbers: request/message counts per month, storage growth, compu
 ## Open Questions
 - [question — what answer would change]
 ```
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

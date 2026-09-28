@@ -1,0 +1,186 @@
+# Example: ui-design applied while writing UI code
+
+## User Input
+
+"Build a sign-up form: name, email, password, and a Create account button."
+
+Context in the repo: plain HTML/CSS/JS, no design system (no token file, no component library, no
+dark-mode mechanism). `POST /api/signup` takes JSON and returns 201, or 422 with
+`{ "errors": { "<field>": "<message>" } }`.
+
+## With the skill (the entire response)
+
+```html
+<style>
+  :root {
+    color-scheme: light dark;
+    --color-bg: #ffffff; --color-fg: #09090b; --color-fg-muted: #52525b;
+    --color-border-strong: #71717a; --color-accent: #1d4ed8;
+    --color-primary: #18181b; --color-primary-fg: #fafafa; --color-primary-hover: #27272a;
+    --color-danger: #b91c1c;
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --text-sm: .875rem; --text-base: 1rem; --text-2xl: 1.5rem;
+    --leading-tight: 1.25; --leading-normal: 1.5;
+    --space-1: .25rem; --space-2: .5rem; --space-4: 1rem; --space-6: 1.5rem;
+    --radius: .5rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --color-bg: #09090b; --color-fg: #fafafa; --color-fg-muted: #a1a1aa;
+      --color-border-strong: #71717a; --color-accent: #60a5fa;
+      --color-primary: #fafafa; --color-primary-fg: #09090b; --color-primary-hover: #e4e4e7;
+      --color-danger: #f87171;
+    }
+  }
+  :root[data-theme="dark"] {
+    --color-bg: #09090b; --color-fg: #fafafa; --color-fg-muted: #a1a1aa;
+    --color-border-strong: #71717a; --color-accent: #60a5fa;
+    --color-primary: #fafafa; --color-primary-fg: #09090b; --color-primary-hover: #e4e4e7;
+    --color-danger: #f87171;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"]  { color-scheme: dark; }
+
+  body { margin: 0; background: var(--color-bg); color: var(--color-fg);
+    font: var(--text-base)/var(--leading-normal) var(--font-sans); }
+  .signup { max-width: 26rem; margin: 0 auto; padding: var(--space-6) var(--space-4); }
+  .signup h1 { font-size: var(--text-2xl); line-height: var(--leading-tight); margin: 0 0 var(--space-6); }
+  .field { display: grid; gap: var(--space-1); margin-bottom: var(--space-4); }
+  .field label { font-weight: 600; }
+  .field input { min-height: 44px; padding: 0 var(--space-4); font: inherit; color: var(--color-fg);
+    background: var(--color-bg); border: 1px solid var(--color-border-strong); border-radius: var(--radius); }
+  .field input[aria-invalid="true"] { border: 2px solid var(--color-danger); }
+  .hint { font-size: var(--text-sm); color: var(--color-fg-muted); margin: 0; }
+  .error { font-size: var(--text-sm); color: var(--color-danger); margin: 0; }
+  .error:empty { display: none; }
+  .submit { width: 100%; min-height: 44px; margin-top: var(--space-2); font: inherit; font-weight: 600;
+    color: var(--color-primary-fg); background: var(--color-primary); border: 0;
+    border-radius: var(--radius); cursor: pointer; transition: background-color .15s; }
+  .submit:hover:not(:disabled) { background: var(--color-primary-hover); }
+  .submit:active:not(:disabled) { transform: translateY(1px); }
+  .submit:disabled { opacity: .6; cursor: not-allowed; }
+  :is(.field input, .submit):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+  .status { margin: var(--space-4) 0 0; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+      transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  }
+</style>
+
+<main class="signup">
+  <h1>Create your account</h1>
+  <form id="signup" novalidate>
+    <div class="field">
+      <label for="name">Full name</label>
+      <input id="name" name="name" type="text" autocomplete="name" required aria-describedby="name-error">
+      <p id="name-error" class="error"></p>
+    </div>
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" inputmode="email" autocomplete="email" required
+             aria-describedby="email-error">
+      <p id="email-error" class="error"></p>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="new-password" required
+             minlength="8" aria-describedby="password-hint password-error">
+      <p id="password-hint" class="hint">At least 8 characters.</p>
+      <p id="password-error" class="error"></p>
+    </div>
+    <button class="submit" type="submit">Create account</button>
+    <p id="signup-status" class="status" aria-live="polite"></p>
+  </form>
+</main>
+
+<script>
+  const form = document.getElementById('signup');
+  const submit = form.querySelector('button[type="submit"]');
+  const status = document.getElementById('signup-status');
+  const checks = {
+    name: v => v.trim() ? '' : 'Enter your full name.',
+    email: v => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.trim()) ? '' : 'Enter an email like name@example.com.',
+    password: v => v.length >= 8 ? '' : 'Use at least 8 characters.',
+  };
+
+  function setError(input, message) {
+    document.getElementById(`${input.id}-error`).textContent = message ? `Error: ${message}` : '';
+    if (message) input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+  }
+
+  function showErrors(errors) {
+    const invalid = Object.keys(checks).map(n => form.elements[n]).filter(input => {
+      setError(input, errors[input.name] || '');
+      return Boolean(errors[input.name]);
+    });
+    if (invalid.length) {
+      invalid[0].focus();
+      status.textContent = `${invalid.length} field${invalid.length > 1 ? 's need' : ' needs'} attention.`;
+    }
+    return invalid.length > 0;
+  }
+
+  form.addEventListener('input', e => {
+    const input = e.target;
+    if (input.getAttribute('aria-invalid') === 'true') setError(input, checks[input.name](input.value));
+  });
+
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    if (submit.disabled) return;
+    const errors = {};
+    for (const [name, check] of Object.entries(checks)) {
+      const message = check(form.elements[name].value);
+      if (message) errors[name] = message;
+    }
+    if (showErrors(errors)) return;
+
+    submit.disabled = true;
+    submit.textContent = 'Creating account…';
+    status.textContent = 'Creating your account…';
+    try {
+      const res = await fetch('/api/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.fromEntries(new FormData(form))),
+      });
+      if (res.status === 422) { if (!showErrors((await res.json()).errors || {})) throw new Error('422'); }
+      else if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      else { form.reset(); status.textContent = 'Account created. Check your inbox to confirm your email.'; }
+    } catch {
+      status.textContent = 'Error: your account was not created. Check your connection and try again.';
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Create account';
+    }
+  });
+</script>
+```
+
+## Why it looks this way (explanation for this example — not part of the response)
+
+- **Rule 1 / fallback palette** — the repo has no design system, so one bundled palette (Zinc) is
+  used, and only its exact light/dark values plus the state `danger` token. Only the tokens the form
+  needs are declared.
+- **Dark mode** — light tokens in `:root`, dark tokens in the `prefers-color-scheme` block guarded by
+  `:not([data-theme="light"])` and repeated under `[data-theme="dark"]`, with `color-scheme` set. No
+  JavaScript, so no flash; the head script is omitted because there is no manual toggle.
+- **Contrast** (computed with the SKILL.md formula, light / dark): input border `border-strong` on
+  `bg` 4.83 / 4.12 (≥ 3:1 boundary); error text `danger` on `bg` 6.47 / 7.19; hint `fg-muted` on `bg`
+  7.73 / 7.76; button `primary-fg` on `primary` 16.97 / 19.06 and on `primary-hover` 14.27 / 15.68;
+  focus outline `accent` on `bg` 6.70 / 7.83. The disabled button is exempt.
+- **Forms** — every input has a visible `<label>` (no placeholder-as-label). Errors are text next
+  to the field, prefixed "Error:" so color is not the only signal, linked by `aria-describedby`, with
+  `aria-invalid="true"`. On submit, and on a 422, focus moves to the first invalid field. `type`,
+  `inputmode` and `autocomplete` (`name`, `email`, `new-password`) serve mobile keyboards and
+  password managers.
+- **Async status** — one `aria-live="polite"` region announces "creating", the error count,
+  success and network failure, since none of these changes the page.
+- **States** — default, hover, `:focus-visible` (2px `accent` outline, offset 2px), active and
+  disabled on the button; the button is disabled with changed text while the request is in flight,
+  which also blocks double submits.
+- **Target size and motion** — inputs and the button are 44px tall (above the 24px minimum, touch
+  friendly); the only transition is removed under `prefers-reduced-motion`.
+- **Type and spacing** — `rem` sizes from the type scale, body at `--text-base`, spacing only from
+  the scale; a single `h1` for the sign-up page inside `main`.

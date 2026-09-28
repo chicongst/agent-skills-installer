@@ -60,6 +60,15 @@ Lead indexes that serve tenant queries with `org_id`. Schema-per-tenant or datab
 - **Joins**: without an index on the join column PostgreSQL hash- or merge-joins; FK indexes pay off for per-parent lookups and parent deletes.
 - **Cost**: every index slows writes and blocks HOT updates when its columns change. Find unused ones via `pg_stat_user_indexes.idx_scan = 0` over a representative window (stats are per node — check replicas too).
 
+## Personal data, retention and erasure
+
+When the input mentions PII, retention, or deletion requests (GDPR/CCPA-style):
+- **Know where PII lives.** Keep personal fields in a small number of tables (e.g. `user_profiles`) rather than copied into orders, logs, and events; reference people by ID elsewhere.
+- **Choose per table: hard delete or anonymize.** Rows other records must keep (orders, invoices, audit trails) get their personal columns overwritten or nulled and keep the ID; owned rows cascade-delete. Express this in `ON DELETE` choices and make the erasure path one transaction or an idempotent job.
+- **Soft delete is not erasure.** A `deleted_at` row still holds the data; state the purge job and its schedule.
+- **Retention** — a time-based purge on an indexed timestamp in batches, or partitions dropped by range when volume is high.
+- **Name what the schema can't reach**: backups, replicas, analytics copies, search indexes, and event logs keep data until their own retention expires — list them as open items for the owner.
+
 ## Only when requirements justify
 
 - **Partitioning** — for retention or queries that always filter on the key; every PK/unique must include the key.
@@ -141,3 +150,5 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 ````
 
 If nothing could be run, every `**Plan**` line reads `[unverified — expected ...]`; never imply a plan was measured. Include **Findings** only for reviews, and there limit Schema/DDL to the tables you change. Omit Assumptions or Open Questions only when there are none.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

@@ -113,3 +113,5 @@ Stop and report instead of guessing. Deliver the report with the root cause mark
 ```
 
 Keep the Hypotheses table to the hypotheses you actually considered; drop none silently — an eliminated hypothesis with its evidence is part of the proof. `template.md` mirrors this format. A worked example is in `examples/example.txt` (if installed).
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

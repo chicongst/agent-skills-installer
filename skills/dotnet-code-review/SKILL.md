@@ -108,7 +108,7 @@ Walk every section; write "OK" for sections checked with no findings. Typical se
 - String comparison without `StringComparison.Ordinal`/`OrdinalIgnoreCase`; `ToLower()` equality.
 - Non-thread-safe collections (`Dictionary`, `List`) mutated in singletons → `ConcurrentDictionary` or a lock.
 - `double`/`float` for money → `decimal`.
-- Tests: new branches covered (happy, error, edge)? Over-mocked `DbContext` or EF InMemory provider for query tests misses real SQL translation — prefer SQLite in-memory or a Testcontainers database when the project does. Tests sharing state across `[Fact]`s.
+- Tests: new branches covered (happy, error, edge)? Over-mocked `DbContext` or the EF InMemory provider for query tests misses real SQL translation — prefer the production engine (e.g. Testcontainers); SQLite in-memory is a weaker fallback that differs in SQL dialect and completes async calls synchronously, hiding disposal bugs. Tests sharing state across `[Fact]`s.
 
 ### Step 4 — Convention check
 
@@ -118,6 +118,8 @@ If you can run commands, `dotnet build` (look for new warnings), `dotnet test`, 
 
 ### Step 5 — Report
 
+`template.md` mirrors this format. A worked example is in `examples/example.txt` (if installed).
+
 No filler praise; genuine strengths go in "Checked OK".
 
 ````markdown
@@ -125,7 +127,7 @@ No filler praise; genuine strengths go in "Checked OK".
 
 **Blast radius:** CRITICAL | HIGH | MEDIUM | LOW
 **Findings:** Blocker x · Major y · Minor z · Nit w
-**Verdict:** REQUEST CHANGES | APPROVE WITH COMMENTS | APPROVE | NEEDS DISCUSSION
+**Verdict:** REQUEST CHANGES | NEEDS DISCUSSION | APPROVE WITH COMMENTS | APPROVE
 
 ## Summary
 [2–4 sentences: what the code does, the main risk, why this verdict]
@@ -160,15 +162,17 @@ No filler praise; genuine strengths go in "Checked OK".
 - [tech debt noticed but unrelated to this change]
 ````
 
-Omit empty severity sections. For a short snippet outside a PR, keep the same headings but drop Verdict.
+Omit empty severity sections. Snippets outside a PR get a verdict too — it tells the author whether the code is fit to use.
 
-**Verdict rules** (follow from the severity definitions):
-- **REQUEST CHANGES** — any BLOCKER or MAJOR.
-- **APPROVE WITH COMMENTS** — MINOR findings only (plus NITs/questions).
-- **APPROVE** — NITs or nothing.
-- **NEEDS DISCUSSION** — the approach itself is wrong or unclear; line-level findings would be premature.
+**Verdict rules** — pick exactly one, applying the rules in order (same scale as `code-review`):
+1. **REQUEST CHANGES** — any BLOCKER or MAJOR.
+2. **NEEDS DISCUSSION** — no BLOCKER/MAJOR, but an open Question could change the approach itself; line-level fixes wait until it is answered.
+3. **APPROVE WITH COMMENTS** — at least one MINOR (NITs and Questions may accompany).
+4. **APPROVE** — NITs or nothing.
 
 ## Special situations
 
 - **Large diff (> ~500 lines):** say so, review by project/folder in passes, CRITICAL-radius files first.
 - **Single dimension requested ("security only"):** do that, but still run the Step 2 slop scan.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

@@ -109,6 +109,7 @@ test-writer
 security-review
 docs-writer
 api-design
+pr-review
 algorithm-review
 mastery
 EOF
@@ -125,6 +126,7 @@ test-writer
 security-review
 docs-writer
 api-design
+pr-review
 db-design
 migration-safety
 sre-engineering
@@ -146,7 +148,9 @@ test-writer
 security-review
 docs-writer
 api-design
+pr-review
 ui-design
+performance-review
 algorithm-review
 mastery
 EOF
@@ -163,12 +167,12 @@ test-writer
 security-review
 docs-writer
 api-design
+pr-review
 db-design
 migration-safety
 sre-engineering
 release-readiness
 performance-review
-pr-review
 changelog
 ui-design
 algorithm-review
@@ -177,6 +181,19 @@ EOF
       ;;
     dotnet)
       cat <<'EOF'
+architect
+code-review
+code-audit
+debug
+fix-bug
+refactor
+test-writer
+security-review
+docs-writer
+api-design
+pr-review
+algorithm-review
+mastery
 dotnet-code-review
 dotnet-code-refactor
 EOF
@@ -193,12 +210,12 @@ test-writer
 security-review
 docs-writer
 api-design
+pr-review
 db-design
 migration-safety
 sre-engineering
 release-readiness
 performance-review
-pr-review
 changelog
 ui-design
 document-review

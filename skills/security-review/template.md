@@ -2,7 +2,7 @@
 
 **Scope:** [files and entry points reviewed]
 **Findings:** 🔴 [n] · 🟠 [n] · 🟡 [n] · 💭 [n]
-**Verdict:** [REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE]
+**Verdict:** [REQUEST CHANGES / NEEDS DISCUSSION / APPROVE WITH COMMENTS / APPROVE]
 
 ## Summary
 [2–4 sentences: what the code does, the most serious weakness, why this verdict.]

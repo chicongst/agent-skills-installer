@@ -1,11 +1,11 @@
 ---
 name: ui-design
-description: Use when building or restyling UI (pages, components, themes, landing pages) in any framework — applies the project's design system first, otherwise bundled contrast-checked light/dark palettes, type and spacing scales, interaction states, dark mode without flash, Core Web Vitals and SEO basics. Not for reviewing or auditing existing UI (use code-review), or profiling slow pages (use performance-review).
+description: Use when building or restyling UI (pages, components, themes, landing pages) in any framework — applies the project's design system first, otherwise bundled contrast-checked light/dark palettes, type and spacing scales, interaction states, dark mode without flash, Core Web Vitals and SEO basics. Not for reviewing existing UI code (use code-review, which checks UI and accessibility), or profiling slow pages (use performance-review).
 ---
 
 # UI Design
 
-Apply these rules while writing UI code. Don't announce or print a checklist; the result should just be better UI. Adapt to the stack in use (React, Vue, Svelte, plain HTML/CSS, SwiftUI, Flutter…).
+Apply these rules while writing UI code. Don't announce or print a checklist; the result should just be better UI. A worked example is in `examples/example.txt` (if installed). Adapt to the stack in use (React, Vue, Svelte, plain HTML/CSS, SwiftUI, Flutter…).
 
 ## Rule 1 — Use the project's design system before anything in this file
 
@@ -149,6 +149,10 @@ In SSR frameworks, use the project's existing theme provider if it has one.
 ```
 
 - **Semantics first**: use `<button>` for actions and `<a href>` for navigation. Every input has a `<label>`. Use landmarks: `header`, `nav` (with `aria-label` if there's more than one), `main`, `footer`. Use ARIA only when no native element fits.
+- **Keyboard**: everything clickable is reachable with Tab in visual order and operable with Enter/Space; no `tabindex` greater than 0; Escape closes overlays.
+- **Forms**: show errors next to the field in text, link them with `aria-describedby`, set `aria-invalid="true"`, and move focus to the first invalid field (or an error summary) on submit. Don't rely on placeholder text as the label. Use the right `type`/`inputmode`/`autocomplete` so mobile keyboards and password managers work.
+- **Dialogs**: prefer native `<dialog>` with `showModal()` — it traps focus and makes the page behind inert. Custom modals must do both, and return focus to the element that opened them on close.
+- **Async status**: announce results that appear without a page change (saved, 3 results, upload failed) through an `aria-live="polite"` region (`role="alert"` only for errors that need immediate attention).
 
 ## Core Web Vitals
 
@@ -195,3 +199,5 @@ The "good" thresholds, measured at the 75th percentile, are LCP ≤ 2.5s, INP �
 - **URLs**: use lowercase with hyphens. Pick one trailing-slash policy and 301-redirect the other form.
 - **Crawling**: production sites need `robots.txt` and `sitemap.xml`. Mark staging with `noindex`.
 - **External links**: `target="_blank"` already implies `noopener` in current browsers. Add `rel="noreferrer"` only if you don't want to send the referrer.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

@@ -37,6 +37,9 @@
 ## Versioning & Deprecation
 [What counts as breaking, deprecation/sunset process and headers, migration guide location]
 
+## Webhooks (if the API emits events)
+[Event types, envelope, signature scheme and header, retry schedule, dedupe key, redelivery]
+
 ## Design Decisions
 **[Decision]** — [why, and the alternative rejected]
 

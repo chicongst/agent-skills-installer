@@ -48,16 +48,16 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 
 | Skill | Description |
 |-------|-------------|
-| `architect` | System architecture, boundaries, data flow, tradeoffs, rollout plans |
-| `code-review` | Bugs, maintainability, correctness, edge cases, architecture issues |
-| `code-audit` | Full 20-dimension audit — architecture, SOLID, patterns, perf, security, DI, async, DB, API, domain — scored with fixes |
+| `architect` | System architecture, boundaries, data flow, consistency, failure modes, security & compliance, tradeoffs, rollout plans |
+| `code-review` | Single-pass review of any code — bugs, edge cases, security/perf red flags, UI & accessibility, tests, verdict (C# goes to `dotnet-code-review` when installed) |
+| `code-audit` | Full 20-dimension audit — architecture, SOLID, patterns, perf, security, DI, async, DB, API, domain — rule-based 0–10 scores, findings, action plan |
 | `debug` | Reproducible failures — ranked hypotheses eliminated by experiment, proven root cause, minimal fix, regression test |
 | `fix-bug` | Entry point for low-context bug reports — intake, investigation, reproduction, fix with explicit confidence (hands off to `debug` when several causes remain) |
 | `refactor` | Simplify/restructure code without changing behavior — anti-patterns included |
 | `test-writer` | Test plans and test code — expected values derived from code/spec, edge cases, dead-code findings, tests actually run |
-| `security-review` | Security risks, trust boundaries, secrets handling, abuse cases |
-| `docs-writer` | Setup guides, ADRs, API references, usage instructions |
-| `api-design` | Resources, contracts, error handling, versioning, examples |
+| `security-review` | Trust boundaries, injection, authz/IDOR, SSRF, XXE, uploads, race conditions, tenant isolation, prompt injection, secrets, crypto — fixes plus regression tests |
+| `docs-writer` | READMEs, tutorials, how-tos, runbooks, API references, ADRs — facts sourced from code, commands verified |
+| `api-design` | Resources, status codes, Problem Details errors, pagination, idempotency, concurrency, versioning, webhooks |
 | `algorithm-review` | Algorithm optimization, data structures, sorting/search improvements |
 | `mastery` | Baseline senior engineering defaults when writing code — yields to task-specific skills and project conventions |
 | `db-design` | Schema, keys, constraints, multi-tenant isolation, indexes derived from queries (rollout goes to `migration-safety`) |
@@ -68,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 | `pr-review` | PR scope, risks, test gaps, change clarity, merge readiness |
 | `changelog` | User-facing and developer-facing changelog entries from commits |
 | `ui-design` | Design tokens, color palettes (light/dark), typography, spacing, UX, SEO |
-| `document-review` | Strict document review — clarity, logic, consistency, accuracy, actionability, reader experience |
+| `document-review` | Strict document review — structure, clarity, consistency, accuracy checked against the repo, actionability; severity-tagged fixes and a verdict |
 | `dotnet-code-review` | .NET / C# code review — blast radius, .NET slop scan, async/DI/EF Core/ASP.NET Core pitfalls, severity-tagged verdict |
 | `dotnet-code-refactor` | Safe .NET / C# refactoring — code smells, risk classification, characterization tests, smallest-change-at-a-time (modifies code) |
 
@@ -88,6 +88,7 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 - security-review
 - docs-writer
 - api-design
+- pr-review
 - algorithm-review
 - mastery
 
@@ -102,14 +103,14 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 ### `frontend` = core +
 
 - ui-design
+- performance-review
 
 ### `fullstack` = backend +
 
-- pr-review
 - changelog
 - ui-design
 
-### `dotnet`
+### `dotnet` = core +
 
 - dotnet-code-review
 - dotnet-code-refactor

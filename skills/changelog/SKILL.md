@@ -32,6 +32,8 @@ gh pr list --state merged --base main --search "merged:>=2024-03-01" \
 
 Also collect: the requested version and release date (ask if missing), and whether the product's readers are end users or developers (library/API/CLI — then the release notes section may be skipped if the user agrees).
 
+**Monorepo:** scope each package's range to its path (`git log <pkg>@1.4.0..HEAD -- packages/<pkg>/`) and its own tag format; write one section per package that changed, and note a change to a shared package in each dependent package that re-exports it or whose behavior it changes.
+
 **No version yet:** use `# Changelog: Unreleased` (date `UNKNOWN`) and `## [Unreleased]` as the Keep a Changelog heading, and write the Version check as `Unreleased — requires {bump} (next: {X.Y.Z} after {last tag})`.
 
 ## Step 2 — Classify
@@ -146,3 +148,5 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 ```
 
 Omit any empty category or section instead of writing "none". BREAKING entries may appear in any developer category, not only Removed. The `## [version] - [date]` block is kept at H2 so it pastes verbatim into `CHANGELOG.md`.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

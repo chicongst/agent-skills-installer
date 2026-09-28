@@ -1,6 +1,6 @@
 ---
 name: docs-writer
-description: Use when writing or updating technical documentation from code, specs, or notes — README/setup guides, how-to guides, API references, ADRs, usage instructions — or when syncing existing docs after a code change. Triggers include "write docs", "document this API", "write a README", "write an ADR", "viết tài liệu", "viết README". Not for critiquing an existing document (use `document-review`), release notes or changelog entries (use `changelog`), or designing/reviewing an API contract (use `api-design` — this skill documents behavior that already exists).
+description: Use when writing or updating technical documentation from code, specs, or notes — README/setup guides, tutorials, how-to guides, runbooks, API references, ADRs, usage instructions — or when syncing existing docs after a code change. Triggers include "write docs", "document this API", "write a README", "write an ADR", "viết tài liệu", "viết README". Not for critiquing an existing document (use `document-review`), release notes or changelog entries (use `changelog`), or designing/reviewing an API contract (use `api-design` — this skill documents behavior that already exists).
 ---
 
 # Docs Writer
@@ -11,7 +11,7 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 
 ## Step 0 — Pin down scope before writing
 
-1. **Doc type** — pick exactly one: README/setup guide, how-to, API reference, ADR. One doc answers one question; if the request mixes "how to deploy" with "why we chose X", write two docs (how-to + ADR) or ask which one.
+1. **Doc type** — pick exactly one: README/setup guide, tutorial, how-to, runbook, API reference, ADR. One doc answers one question; if the request mixes "how to deploy" with "why we chose X", write two docs (how-to + ADR) or ask which one.
 2. **Audience** — who acts on it and what they already know (frontend engineer calling the API, new backend hire, on-call operator, future maintainer). This decides what you explain and what you skip. If not stated, assume a competent engineer new to this project and say so in Writer's notes.
 3. **Source of truth** — the code paths, config, spec, or user notes you will derive facts from. If the user gave only a one-line description and no code, ask for the code or spec (use AskUserQuestion if available, otherwise ask in plain text). If they want a draft anyway, write it with every unsourced fact marked `[TODO: confirm …]`.
 4. **Existing docs** — search for docs that already cover the topic (README, `docs/`, wiki links in the repo). Update the existing doc instead of creating a competing one.
@@ -51,6 +51,10 @@ Follow the project's existing layout; these are common places, not guarantees.
 **README / setup guide** — First line: what it is and who it's for. Prerequisites list exact versions from the repo plus the command to check each (`node --version`). Steps: install → configure → run → verify, each with the command and what success looks like. Troubleshooting comes from failures you actually hit while verifying, plus the error strings the config loader produces for missing env vars. Link out to how-tos rather than growing the README.
 
 **How-to guide** — One goal in the title ("How to rotate the signing key"). Prerequisites include access/permissions, not just tools. Each numbered step is one action + command + expected result. End with "Verify it worked" and, if steps change state, "Undo". Explain *why* only where a reader would otherwise skip or reorder a step.
+
+**Tutorial** — For a learner, not a practitioner: one guided path to a working result, every step shown, no choices to make. Unlike a how-to it explains what each step taught, and it assumes nothing beyond the stated prerequisites. Test it end to end from a clean environment; a tutorial that fails at step 4 loses the reader for good.
+
+**Runbook** — For an on-call operator under pressure, usually tied to an alert. Title names the alert or symptom. Open with impact and severity, then: how to confirm the diagnosis (exact queries/commands and what a bad result looks like), mitigation steps in order of safety, each with its risk and a check that it worked, escalation (who, when), and rollback. No background prose before the first action. Commands that change production are marked as such and never run while writing (Fact rule 3).
 
 **API reference** — Per endpoint: method + path, auth, parameters table (name, location, type, required, constraints), a runnable request example, success response per status, errors table (status, code, cause, how to fix). Response and error examples must match the shapes the code builds — no fields the code doesn't return. Order of validation matters when a request can fail several ways; state it if the code makes it deterministic. Prefer linking to a generated spec (OpenAPI) when one exists and keeping prose to what the spec can't say.
 
@@ -114,6 +118,35 @@ Deliver the document using the skeleton for its type, then Writer's notes (for t
 ## Troubleshooting
 **`[exact error text]`** — [cause]. [Fix]
 
+<!-- Tutorial -->
+# [Build/learn X]: a tutorial
+[One line: what you will have at the end, and roughly how long it takes]
+
+## Before you start
+- [prerequisite with version]
+
+## Step 1 — [Action]
+[command block + expected result + one line on what this step taught]
+
+## What you built
+[recap + where to go next]
+
+<!-- Runbook -->
+# Runbook: [alert name or symptom]
+**Impact**: [who/what is affected] · **Severity**: [default SEV] · **Last verified**: [YYYY-MM-DD]
+
+## Confirm
+[command/query + what a bad result looks like]
+
+## Mitigate
+1. [safest action] — risk: [...] — check: [command + expected]
+
+## Escalate
+[who, and when: condition or elapsed time]
+
+## Rollback
+[how to undo each mitigation]
+
 <!-- API reference (repeat Endpoint per endpoint) -->
 # [API name]
 [One line: what it does and who calls it]
@@ -171,3 +204,5 @@ We will [decision].
 **Not run**: [commands left unverified and why]
 **Open questions**: [each `[TODO: confirm …]` in the doc, plus code/input discrepancies found]
 ```
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

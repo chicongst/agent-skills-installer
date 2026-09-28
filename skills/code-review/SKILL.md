@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Use when reviewing code in any language except C#/.NET — a snippet, function, file, module, or diff — for bugs, correctness, edge cases, security and performance red flags, maintainability, and tests, including when the user pastes code and asks \"any issues?\", \"is this OK?\", \"review this code\". Single pass: severity-tagged findings with fixes and a verdict; does not edit code. Not for C#/.NET (use `dotnet-code-review`), merge readiness of a PR or change set (`pr-review`), a scored multi-dimension audit (`code-audit`), a deep security review (`security-review`), or applying fixes (`refactor`)."
+description: "Use when reviewing code in any language — a snippet, function, file, module, or diff — for bugs, correctness, edge cases, security and performance red flags, maintainability, and tests, including when the user pastes code and asks \"any issues?\", \"is this OK?\", \"review this code\". Single pass: severity-tagged findings with fixes and a verdict; does not edit code. Not for C#/.NET when `dotnet-code-review` is installed, merge readiness of a PR or change set (`pr-review`), a scored multi-dimension audit (`code-audit`), a deep security review (`security-review`), or applying fixes (`refactor`)."
 ---
 
 # Code Review
@@ -56,6 +56,7 @@ Walk every dimension. If one is clean, record it under **Checked OK** with a sho
 - **Security (quick check)** — Untrusted input reaching SQL/shell/HTML/file paths/deserializers/URLs fetched server-side; missing authn/authz on new entry points; secrets or PII in code or logs; weak crypto or non-crypto randomness for tokens. For anything beyond a quick check, recommend `security-review`.
 - **Performance** — Queries or I/O inside loops (N+1), unbounded reads/pagination, blocking calls in async paths, wrong data structure for membership checks, repeated work on a hot path. Any claim of "slow" must cite a measurement from the input or be labeled an estimate.
 - **Maintainability** — Names that hide intent, ambiguous return values (`None` meaning three different things), deep nesting, duplication, comments that contradict the code, abstractions built for one caller.
+- **UI and accessibility** (UI code only) — Controls reachable and operable by keyboard, visible `:focus-visible`, a `<label>` for every input, form errors tied to their field (`aria-describedby`, `aria-invalid`), async status announced (`aria-live`), dialogs that trap and return focus, text contrast below 4.5:1 (3:1 for large text and control boundaries), images without size (layout shift), missing loading/empty/error states. Follow the project's design system; `ui-design` holds the full rules.
 - **Tests** — Does a test cover each new branch and the edge cases you found? Would the existing tests fail if the bug you found were present? Over-mocking that tests only the mocks.
 
 ### 4. Convention check
@@ -124,6 +125,7 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 Omit a severity section that has no findings; write "None" under Questions / Checked OK / What's good if empty. Never paste secret values into the report — refer to them by location.
 
 ## Special situations
+- **C#/.NET code without `dotnet-code-review` installed:** review it here and add the .NET checks you know (async deadlocks, DI lifetimes, EF Core N+1 and client evaluation, disposal); say that the dedicated skill would go deeper.
 - **Snippet with no callers visible:** review it standalone and say which risks depend on the callers (e.g., "BLOCKER if `order_id` comes from the client").
 - **Huge diff (>500 lines):** say so, split by module, review the highest blast-radius part first.
 - **User asks for one dimension only** (e.g., "just performance"): do that dimension plus the slop scan; list other dimensions as not assessed.
@@ -132,3 +134,5 @@ Omit a severity section that has no findings; write "None" under Questions / Che
 ## Don't
 - Don't edit the code, and don't rewrite the whole function in a Fix — minimal snippets only.
 - Don't pad with praise or filler; "What's good" is for specific things to preserve.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

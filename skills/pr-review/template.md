@@ -43,7 +43,7 @@
 - [specific, true observation]
 
 ## Verdict
-**[APPROVE / REQUEST CHANGES / NEEDS DISCUSSION]** — [one sentence tied to the verdict rules]
+**[REQUEST CHANGES / NEEDS DISCUSSION / APPROVE WITH COMMENTS / APPROVE]** — [one sentence tied to the verdict rules]
 
 ## Merge Checklist
 - [ ] CI passing

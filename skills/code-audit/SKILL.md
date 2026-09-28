@@ -1,93 +1,104 @@
 ---
 name: code-audit
-description: Comprehensive 20-dimension code audit at Senior/Staff Engineer level — scores each of Architecture, Clean Code, SOLID, Design Patterns, Performance, Security, Naming, Folder Structure, Dependency Injection, Async/Await, Error Handling, Logging, Validation, Testability, Maintainability, Scalability, Database Design, API Design, Domain Modeling, and Overall Code Quality (0–10 each) with severity-tagged findings (BLOCKER/MAJOR/MINOR/NIT), concrete fixes, and a prioritized action plan. Use when the user wants a full/deep/thorough audit, a quality scorecard, or evaluation across many dimensions of a file, module, service, or whole codebase — including when they paste code and ask "evaluate this source against these criteria…", "comprehensive review", "score the code quality", "full code audit". For a quick single-pass review use `code-review`; for merge-readiness on a PR use `pr-review`; for .NET-specific review use `dotnet-code-review`. Does NOT modify code — for rewrites switch to `refactor`.
+description: "Use when the user wants a full, deep, or scored audit of a file, module, service, or whole codebase across many quality dimensions — a 0–10 scorecard over architecture, clean code, SOLID, patterns, performance, security, naming, structure, DI, async, error handling, logging, validation, testability, maintainability, scalability, database, API and domain modeling, with severity-tagged findings and a prioritized action plan. Any language, C# included. Triggers: \"full code audit\", \"score the code quality\", \"comprehensive review\", \"evaluate this source against these criteria\", \"đánh giá toàn diện code\". Not for a quick single-pass review (use `code-review`), PR merge readiness (`pr-review`), a security-only review (`security-review`), or applying fixes (`refactor`)."
 ---
 
-# Code Audit (20-dimension Senior/Staff-level evaluation)
+# Code Audit
 
-When this skill activates, act as a **Senior/Staff Software Engineer** running a formal, multi-dimensional audit of a codebase for a teammate or a release gate. The goal is a **defensible, evidence-based assessment** across 20 named dimensions, each scored, with concrete findings and a prioritized fix plan. **Do not modify code** — that is the job of the `refactor` skill.
+Run a formal, multi-dimensional audit the way a Staff engineer would for a release gate or a tech-debt decision: every score backed by `file:line` evidence, scored by fixed rules so two audits of the same code land on the same numbers, and a fix plan ordered by what matters. **Read-only** — to apply fixes, switch to `refactor` (or `dotnet-code-refactor` for C#).
 
-## Core principles (read before auditing)
+## Principles
 
-1. **Evidence over assertion.** Every finding names a `file:line` and states the concrete failure (input → wrong output/crash), not a vague smell. If you cannot point to it, do not claim it. When you can run the code safely, reproduce the problem and mark the finding `[verified]`.
-2. **Retrieval-led, not pretrain-led.** Before judging against "best practice", read neighboring files and learn the project's actual conventions, stack, and constraints. Project convention beats generic advice. If the stack makes a dimension irrelevant, mark it **N/A** and say why.
-3. **Scale effort to blast radius.** Spend the audit budget where failure is expensive — auth, money, data writes, migrations, public endpoints — not on renames.
-4. **Score honestly and consistently.** Use the rubric below. A dimension with one BLOCKER cannot score above 4. Do not inflate to be polite; do not deflate to look rigorous.
-5. **Separate facts from fixes.** State the defect, then the fix as a small snippet or a one-line direction — never a full rewrite.
-6. **Praise what is genuinely good.** Call out correct primitives and clean patterns so the report is not fear-mongering and the team knows what to keep.
+1. **Evidence or it isn't a finding.** Every finding names `file:line` and a concrete failure (input → wrong result, crash, leak). If you can run the code safely (a copy, a REPL, a test), reproduce BLOCKER/MAJOR candidates and tag them `[verified]`. If you can't point at it, don't claim it.
+2. **Project convention beats generic best practice.** Read neighboring files first. Where the project's pattern conflicts with your preference, raise a Question, not a finding.
+3. **Effort follows blast radius.** Spend the audit on auth, money, data writes, migrations, and public entry points, not on renames.
+4. **Score by the rules below, not by feel.** Don't inflate to be polite or deflate to look rigorous.
+5. **Don't guess missing context.** Unknown callers, deployment, or scale that would change a score go under Questions; say which score they would move.
 
-## Severity tags
+## Step 1 — Scope
 
-- **🔴 BLOCKER** — ships a security hole, data loss/corruption, crash on reachable input, or a broken contract. Must fix before merge/release.
-- **🟠 MAJOR** — real bug, missing validation at a trust boundary, N+1, or a design flaw that will bite soon.
+- **Which dimensions.** If the user names criteria ("evaluate against Architecture, Security, …"), score only those and list the rest in the scorecard as **Not requested**. Otherwise score all 20.
+- **Which code.** For a file or module, read all of it. For a whole codebase, don't pretend to have read everything: map the entry points and layers, then read in depth the critical paths (auth, payments/money, data writes, public API) plus one representative module per layer. State the coverage in the report ("read in full: …; sampled: …; not read: …").
+- **N/A** — a dimension that doesn't apply to this code (Database Design for a pure CLI) is N/A with a reason. It is not scored and doesn't count toward Overall.
+- State the blast radius: what breaks if this code is wrong, and for whom.
+
+## Step 2 — Sweep the dimensions
+
+| # | Dimension | What to check |
+|---|---|---|
+| 1 | Architecture | Boundaries, layering, dependency direction, cyclic deps, god objects, data flow |
+| 2 | Clean Code | Function size and focus, nesting, dead code, duplication, comments explain *why* |
+| 3 | SOLID | One reason to change per unit, substitutable subtypes, narrow interfaces, depending on abstractions where a seam is needed |
+| 4 | Design Patterns | Patterns that fit the problem; no speculative abstraction, no reinvented library features |
+| 5 | Performance | Complexity on hot paths, N+1, unbounded reads, needless I/O or allocation, caching |
+| 6 | Security | Injection, authn/authz and object-level access, secrets, trust boundaries, crypto, SSRF/XSS/CSRF, safe defaults |
+| 7 | Naming | Intention-revealing, consistent, units and booleans clear, nothing misleading |
+| 8 | Folder Structure | Predictable layout, feature vs layer consistency, nothing internal shipped or served |
+| 9 | Dependency Injection | Dependencies passed in, no hidden globals/singletons, correct lifetimes |
+| 10 | Async/Await | Awaited work, no blocking in async paths, timeouts/cancellation, unhandled rejections, concurrency safety |
+| 11 | Error Handling | Right layer, nothing swallowed, fail-closed on security, resource cleanup |
+| 12 | Logging | Levels, structure and context, no secrets/PII, useful for tracing |
+| 13 | Validation | Server-side at every trust boundary, allowlists, size/type/range, output encoding |
+| 14 | Testability | Pure cores, injectable deps, determinism; existing tests assert behavior and cover critical paths |
+| 15 | Maintainability | A new engineer can change it safely; duplication, coupling, docs where non-obvious |
+| 16 | Scalability | Statelessness, horizontal scale, backpressure, single-instance assumptions |
+| 17 | Database Design | Schema, constraints, indexes vs queries, transactions, migration safety |
+| 18 | API Design | Resource naming, status codes, error shape, idempotency, pagination, versioning |
+| 19 | Domain Modeling | Invariants enforced in the model, ubiquitous language, no anemic or leaky model |
+| 20 | Overall Code Quality | Computed — see Step 4 |
+
+**One finding, one home.** Record each finding under the single dimension it primarily violates (SQL injection → Security, not also Validation and Clean Code). Other dimensions may mention it ("see B1") but it lowers only its home dimension. This stops one defect from being counted four times.
+
+Walk every in-scope dimension. A clean dimension gets a one-line reason ("parameterized queries throughout, authz middleware on every route"), not silence.
+
+## Step 3 — Verify and rank
+
+Reproduce BLOCKER/MAJOR candidates on reachable paths when it is safe; tag `[verified]`. Downgrade or move to Questions anything you cannot substantiate. Merge findings with one root cause into one finding with every location listed. Order by severity, then blast radius.
+
+**Severity** (shared scale):
+- **🔴 BLOCKER** — security hole, data loss/corruption, crash on reachable input, or broken contract. Must fix before release.
+- **🟠 MAJOR** — real bug, missing validation at a trust boundary, N+1 on a real path, or a design flaw that will bite soon.
 - **🟡 MINOR** — maintainability, clarity, or robustness issue worth fixing.
-- **💭 NIT** — style/taste; mention briefly, never dwell.
+- **💭 NIT** — taste; one line.
 
-## Scoring rubric (per dimension, 0–10)
+## Step 4 — Score
+
+**Per dimension (0–10):** start from the band that matches the evidence, then apply the caps.
 
 | Band | Meaning |
 |---|---|
 | 9–10 | Exemplary; nothing material to change |
-| 7–8 | Solid; minor issues only |
-| 5–6 | Works but has clear gaps; MAJORs present |
-| 3–4 | Significant problems; at least one BLOCKER or many MAJORs |
-| 0–2 | Broken/absent for this dimension |
-| N/A | Not applicable to this stack — say why |
+| 7–8 | Solid; MINOR/NIT only |
+| 5–6 | Works, with clear gaps |
+| 3–4 | Significant problems |
+| 0–2 | Broken or absent |
 
-## The 20 dimensions (what to check in each)
+Caps: a dimension with a BLOCKER scores **≤ 4**; with a MAJOR (and no BLOCKER) **≤ 6**.
 
-1. **Architecture** — clear boundaries, layering, coupling/cohesion, data flow, no god-objects/cyclic deps.
-2. **Clean Code** — small focused functions, low nesting, no dead code, no copy-paste, comments explain "why".
-3. **SOLID** — SRP per unit, open for extension, substitutable subtypes, segregated interfaces, depend on abstractions.
-4. **Design Patterns** — appropriate patterns applied (or correctly avoided); no over-engineering, no reinvented wheels.
-5. **Performance** — hot paths, algorithmic complexity, N+1 queries, unnecessary allocation/IO, caching, pagination.
-6. **Security** — injection, authn/authz, secrets handling, input trust boundaries, crypto, prototype pollution, SSRF/XSS/CSRF, safe defaults.
-7. **Naming** — intention-revealing, consistent, no misleading names, units/booleans clear.
-8. **Folder Structure** — predictable layout, separation of concerns, no internal docs/secrets served or shipped.
-9. **Dependency Injection** — dependencies passed not newed-up inline, seams for testing, no hidden globals/singletons.
-10. **Async/Await** — no blocking in async paths, awaited promises, cancellation/timeouts, no unhandled rejections, concurrency safety.
-11. **Error Handling** — errors caught at the right layer, no swallowed exceptions, fail-safe vs fail-open, no crash on bad input, resource cleanup.
-12. **Logging** — right levels, structured/contextual, no PII/secrets logged, traceable, not noisy.
-13. **Validation** — server-side validation at boundaries, allow-lists, size/type/range checks, output encoding.
-14. **Testability** — pure cores, injectable deps, deterministic, existing tests meaningful (behavior not implementation), coverage of critical paths.
-15. **Maintainability** — a new engineer can change it safely in 6 months; low duplication; docs where non-obvious.
-16. **Scalability** — statelessness, concurrency-safe storage, horizontal scale, backpressure, no single-instance-only assumptions.
-17. **Database Design** — schema/normalization, indexes, constraints, transactions, migration safety, query patterns.
-18. **API Design** — resource naming, status codes, idempotency, versioning, error shape, pagination, contract stability.
-19. **Domain Modeling** — model reflects the domain, invariants enforced in the model, no anemic/leaky abstractions, ubiquitous language.
-20. **Overall Code Quality** — holistic judgment; the weighted read of the above and release-worthiness.
+**Overall Code Quality** is not a judgment call: take the **median** of the scored dimensions (exclude N/A and Not requested), round down, then cap it at **4** if any reachable BLOCKER exists, or at **6** if any MAJOR exists. Show the arithmetic in its note ("median of 6 scores = 3; BLOCKER cap 4 → 3").
 
-## Workflow (5 steps, in order)
+**Verdict**, applying the rules in order:
+1. **BLOCKED** — any open BLOCKER.
+2. **NEEDS WORK** — any MAJOR, or Overall below 7.
+3. **READY** — otherwise.
 
-### Step 1 — Scope and context
-Identify the stack, entry points, and what the code is responsible for. Read the key files and enough neighbors to learn conventions. State the blast radius (what breaks if this is wrong, and for whom). If a dimension does not apply to this stack, decide **N/A** now.
+## Step 5 — Report
 
-### Step 2 — Dimension sweep
-Go through all 20 dimensions. For each, gather concrete evidence (`file:line`) and assign a preliminary score. Skip nothing — an unexamined dimension is reported as "not assessed", never silently dropped.
+`template.md` has the full skeleton; a worked example is in `examples/example.txt` (if installed). If the template isn't available, use these sections in this order:
 
-### Step 3 — Verify the dangerous ones
-For BLOCKER/MAJOR candidates on reachable paths (security, crashes, data loss), reproduce them when you can do so safely (run a copy, craft the input). Tag confirmed ones `[verified]`. Downgrade anything you cannot substantiate.
-
-### Step 4 — Score and rank
-Fill the scorecard. Rank findings most-severe first. Compute an honest **Overall Code Quality** that respects the rubric (any reachable BLOCKER caps Overall at 4).
-
-### Step 5 — Report
-Emit the report in the template format. Lead with the verdict and the scorecard, then findings by severity, then what's good, then a prioritized action plan.
-
-## Output format
-
-Follow `template.md`. Requirements:
-
-- **Scorecard table** covering all 20 dimensions with a one-line note each. N/A allowed with a reason.
-- **Findings** ordered by severity; each has location, concrete problem, risk, and a fix snippet/direction. Mark reproduced ones `[verified]`.
-- **What's good** — genuine strengths to preserve.
-- **Action plan** — ordered, grouped by root cause where several findings share one, with rough effort.
-- **Verdict** — READY / NEEDS WORK / BLOCKED, one sentence.
+1. `# Code Audit: [target]` with **Verdict**, **Blast radius**, and **Coverage** (read in full / sampled / not read).
+2. **Scorecard** — one row per dimension: score, `N/A — reason`, or `Not requested`, plus a one-line note.
+3. **Findings** by severity — each with ID, dimension, `file:line`, problem, risk (input → outcome), minimal fix.
+4. **Questions** — what only the author can answer, and which score it could move.
+5. **What's good** — specific strengths to keep.
+6. **Action plan** — ordered, grouped by root cause, with rough effort.
 
 ## Rules
 
-- Do not modify code. If the user wants fixes applied, recommend the `refactor` skill.
-- Do not invent findings to fill a dimension. "No issues found" with a short reason is a valid result.
-- Prefer the project's conventions over your defaults; when they conflict, note it as a question, not a verdict.
-- Keep snippets minimal — enough to show the fix, not a rewrite.
-- Never expose secrets in the report; refer to them by name/location only.
+- Do not modify code.
+- Don't invent findings to fill a dimension; a clean dimension with a reason is a valid result.
+- Fixes are minimal snippets or one-line directions, never rewrites.
+- Never paste secret values; refer to them by location.
+- Don't write exploit payloads; describe the failure ("attacker-controlled `id` reaches the SQL string") and the fix.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

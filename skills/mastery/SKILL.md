@@ -5,7 +5,7 @@ description: "Use when writing or modifying code in any language — a silent ba
 
 # Senior Engineering Defaults
 
-Apply these silently while writing code. Do not announce them, emit a checklist, or add a report — the code is the output. Skip any rule that does not fit the language or context.
+Apply these silently while writing code. Do not announce them, emit a checklist, or add a report — the code is the output. Skip any rule that does not fit the language or context, and skip this file entirely for docs, config-only edits, and one-off scripts the user will throw away.
 
 ## Precedence
 
@@ -40,8 +40,8 @@ If a rule here conflicts with the project, follow the project. If following the 
 ## Data access
 
 - Parameterize every query; never build SQL, shell commands, or paths by string concatenation of input.
-- Select explicit columns; avoid `SELECT *` in production queries.
-- Every list query is bounded. For large or mutable sets use keyset pagination (`WHERE id > :last_id ORDER BY id LIMIT :n`); offset only for small, stable sets.
+- In new production queries, select the columns you use rather than `SELECT *` (when editing an existing query, keep its shape unless the task is to change it).
+- List queries that serve users or jobs are bounded. For large or mutable sets prefer keyset pagination (`WHERE id > :last_id ORDER BY id LIMIT :n`); offset is fine for small, stable sets or when the project already uses it.
 - No N+1: join, batch-load, or use the ORM's eager loading.
 - Process large datasets in bounded chunks with a resumable cursor; batch small writes instead of one round-trip per row.
 - Multi-statement writes that must succeed together go in one transaction.
@@ -82,3 +82,5 @@ If a rule here conflicts with the project, follow the project. If following the 
 - Adding a dependency needs a reason the standard library or existing dependencies cannot cover; update the lockfile with it.
 
 A worked example is in `examples/example.txt` (if installed).
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

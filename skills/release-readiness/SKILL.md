@@ -20,8 +20,8 @@ Act as the release manager who has to sign the go/no-go. The goal is a defensibl
 
 Use the shared four levels. Any open 🔴 BLOCKER makes the verdict NO-GO.
 
-- **🔴 BLOCKER**: likely data loss or corruption, an irreversible step with no mitigation, a broken consumer contract, no working rollback, a revenue-critical path with no way to detect failure, an outage-class step on a revenue-critical path (long lock, full-table rewrite, long single-transaction backfill), or a window that collides with a freeze or peak.
-- **🟠 MAJOR**: rollback exists but is slow, untested, or incomplete; a gate or signal is missing; a required check is not started.
+- **🔴 BLOCKER**: likely data loss or corruption, an irreversible step with no mitigation, a broken consumer contract, no working rollback, a revenue-critical path with no way to detect failure, an outage-class step on a revenue-critical path (long lock, full-table rewrite, long single-transaction backfill), or a Medium/High-risk release (or any release the freeze policy forbids) scheduled into a freeze or right before a known peak.
+- **🟠 MAJOR**: rollback exists but is slow, untested, or incomplete; a gate or signal is missing; a required check is not started; a Low-risk, revert-safe release inside a freeze the policy allows with approval, without that approval.
 - **🟡 MINOR**: a gap that lowers confidence but doesn't change the outcome (missing dashboard link, owner not named).
 - **💭 NIT**: wording or formatting of the plan.
 
@@ -118,3 +118,5 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 
 ## Style
 - Put the verdict first. Name the worst credible outcome in business terms ("orders priced wrong with no alert"), not "risk is elevated".
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

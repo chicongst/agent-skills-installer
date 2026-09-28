@@ -51,6 +51,10 @@ Design and write tests that catch real bugs, with expected values you can defend
    discount_service.calculate.assert_called_once()
    ```
 
+5. **No sleeps, no timing luck.** Wait on a condition (poll with a deadline, await the promise, use the framework's `waitFor`), never `sleep(2)`. A test that fails 1 run in 50 is a bug in the test or the code — find which (`debug`), don't retry it green.
+6. **Property-based tests for invariants.** When a rule holds for all inputs (round-trip `decode(encode(x)) == x`, sort output is ordered and a permutation, totals never negative), add a property test (Hypothesis, fast-check, jqwik, FsCheck) next to the examples, if the project has or accepts the library; keep the shrunk failing case as a regular regression test.
+7. **Know what your isolation hides.** A rolled-back transaction per test never commits, so deferred constraints, commit triggers, `ON COMMIT` behavior, and code that opens its own connection don't run as in production; test those with truncation or a throwaway database instead.
+
 ## Output Format
 
 ```markdown
@@ -88,3 +92,5 @@ Design and write tests that catch real bugs, with expected values you can defend
 If no findings, write "None found" under Findings and keep the section. Severity uses the shared scale: 🔴 BLOCKER — security hole, data loss/corruption, crash on reachable input, or broken contract; 🟠 MAJOR — real bug or missing validation at a trust boundary; 🟡 MINOR — maintainability, clarity, or robustness issue (dead code, unclear spec); 💭 NIT — style.
 
 `template.md` mirrors this format. A worked example is in `examples/example.txt` (if installed).
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

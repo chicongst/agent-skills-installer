@@ -26,7 +26,7 @@ State what the code does and who calls it; if you can't, ask. Given a `dotnet-co
 | Long method | > ~50 lines, several jobs | Extract Method / local function |
 | God service | 6+ constructor dependencies, unrelated methods | Extract Class along one responsibility |
 | Long parameter list / data clump | > 4–5 params; same group travels together | Parameter object (`record`) |
-| Duplicate code | Same logic in 2+ places | Extract Method — grep for an existing helper first |
+| Duplicate code | Same logic in 3+ places, or in 2 that must always change together | Extract Method — grep for an existing helper first |
 | Primitive obsession | `string email`, `decimal` money without currency | Value object (`readonly record struct`) |
 | Deep nesting | 4+ levels of `if` | Guard clauses / early return |
 | Repeated type switch | Same `switch` on an enum in several methods | Polymorphism; a lone switch → at most a switch expression |
@@ -77,12 +77,14 @@ Wait for confirmation on RISKY/DANGEROUS plans; clear SAFE work may proceed.
 ### Step 5 — Apply
 
 1. One step → `dotnet build` → `dotnet test` → next step.
-2. Rename with the IDE/Roslyn rename, then do the Step 2 string grep.
+2. Renames: update the declaration and every reference (grep the symbol, including `nameof(...)`, XML docs, and the Step 2 string forms), then `dotnet build` — a missed reference fails the build, a missed string doesn't, so the grep is what protects you. If the user runs an IDE, they can apply the rename with Rider/Visual Studio and you verify.
 3. Format touched files only, with the project's `.editorconfig`/analyzers: `dotnet format --include src/Orders/OrderService.cs`.
 4. Never silence a new warning (`#pragma`, `<NoWarn>`, `!`) — it means the step changed something. No package upgrades or namespace moves on the side.
-5. **A step fails unexpectedly:** undo only that step (restore the previous text, or `git revert` its commit) — never "fix" the tests. Ask before `git stash` or `git checkout -- <file>`; never `git reset`. Outdated branch or conflicts → ask the user; don't rebase or merge.
+5. **A step fails unexpectedly:** undo only that step by restoring the text you changed — never "fix" the tests. Don't commit steps unless the user asked for commits. Ask before `git stash` or `git checkout -- <file>` (both also touch the user's uncommitted work); never `git reset`. Outdated branch or conflicts → ask the user; don't rebase or merge.
 
 ### Step 6 — Verify and report
+
+`template.md` mirrors the plan and report formats. A worked example is in `examples/example.txt` (if installed).
 
 Full `dotnet build` (warnings ≤ baseline) and `dotnet test`; review the diff and revert anything outside the plan.
 
@@ -168,3 +170,5 @@ public readonly record struct Email
 - Big-bang rewrites when asked to "refactor".
 - Deleting "dead" code without checking reflection, DI assembly scanning, controller routing, and serializers.
 - Imposing patterns the codebase doesn't use (MediatR, repositories over `DbContext`, new folder schemes) — ask first.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

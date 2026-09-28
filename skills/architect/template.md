@@ -28,7 +28,7 @@
 - **Scaling**: [unit of scale and what drives it]
 
 ## Data Flow
-[diagram + numbered steps for the primary path]
+[diagram (a mermaid `flowchart` renders in most viewers; ASCII otherwise) + numbered steps for the primary path]
 
 ## Data Consistency
 - **Source of truth**:
@@ -36,6 +36,14 @@
 - **Delivery semantics & idempotency**: [where duplicates arise, dedupe key]
 - **Ordering**:
 - **What can be lost**: [none / bounded + justification + how counted]
+
+## Security & Compliance
+- **Trust boundaries**: [where untrusted input enters]
+- **Identity & authz**: [user auth, service-to-service auth, where authorization is enforced]
+- **Sensitive data**: [class → store → encryption, access, retention]
+- **Tenancy isolation**: [mechanism and enforcing layer, or "single-tenant"]
+- **Secrets**: [store and rotation]
+- **Compliance / residency**: [named constraints and their effect, or "none stated"]
 
 ## Failure Modes
 | Failure | Impact | Detection | Mitigation | Recovery |

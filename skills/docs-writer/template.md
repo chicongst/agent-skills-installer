@@ -42,6 +42,35 @@
 ## Troubleshooting
 **`[exact error text]`** — [cause]. [Fix]
 
+<!-- Tutorial -->
+# [Build/learn X]: a tutorial
+[One line: what you will have at the end, and roughly how long it takes]
+
+## Before you start
+- [prerequisite with version]
+
+## Step 1 — [Action]
+[command block + expected result + one line on what this step taught]
+
+## What you built
+[recap + where to go next]
+
+<!-- Runbook -->
+# Runbook: [alert name or symptom]
+**Impact**: [who/what is affected] · **Severity**: [default SEV] · **Last verified**: [YYYY-MM-DD]
+
+## Confirm
+[command/query + what a bad result looks like]
+
+## Mitigate
+1. [safest action] — risk: [...] — check: [command + expected]
+
+## Escalate
+[who, and when: condition or elapsed time]
+
+## Rollback
+[how to undo each mitigation]
+
 <!-- API reference (repeat Endpoint per endpoint) -->
 # [API name]
 [One line: what it does and who calls it]

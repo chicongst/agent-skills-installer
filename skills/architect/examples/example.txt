@@ -150,6 +150,36 @@ Adding `dedupe_key` plus a unique index to the existing table goes through `migr
   - Users created near the end of a run may be missed if the replica has not yet received them.
     Accepted: they were not in the audience when the campaign started.
 
+## Security & Compliance
+- **Trust boundaries**: no new public endpoint. Every notification originates in monolith code, so
+  user input enters only as content (e.g. a mention's text) that is rendered into email HTML and
+  push payloads; templates escape it (implementation check → `security-review`). Outbound calls
+  cross to SendGrid and the browsers' push services over TLS.
+- **Identity & authz**:
+  - Users: unchanged (monolith sessions).
+  - Campaign start is the biggest amplifier (one action → 5M messages): restrict it to named
+    operators, and the runner refuses to start while another campaign is running.
+  - Services: each ECS service has its own task IAM role scoped to its queues. Relay and runner may
+    only `SendMessage`; each consumer may only receive and delete on its own queue and DLQ.
+  - DB: the in-app consumer uses a role with `INSERT` on `notifications` only; the runner reads the
+    replica and writes only `campaign_runs`.
+  - Redis: consumers share the session Redis, so a consumer compromise could read sessions. Give
+    them a Redis ACL user limited to `dedupe:*` keys, or a separate Redis (Open Questions).
+- **Sensitive data**:
+  - Email addresses and push subscriptions (PII): stay in the monolith DB; messages carry `user_id`
+    and are resolved at send time.
+  - Password-reset links are credentials. They sit in the outbox row, the SQS body and, on failure,
+    the DLQ for up to 4 days. SQS server-side encryption on all 12 queues; DLQ redrive limited to
+    on-call; bodies never logged (logs carry the dedupe key only). Token lifetime bounds the
+    exposure (Open Questions).
+  - Retention: outbox rows deleted on ack, dedupe keys 24 h, SQS 4 days.
+- **Tenancy isolation**: single-tenant.
+- **Secrets**: the SendGrid API key and the web-push VAPID private key move to AWS Secrets Manager,
+  injected through the ECS task definition; only email consumers get the SendGrid key, only push
+  consumers the VAPID key. Rotate the SendGrid key by issuing a new one, deploying, then revoking
+  the old. Rotate VAPID only on compromise: a new key pair invalidates every push subscription.
+- **Compliance / residency**: none stated.
+
 ## Failure Modes
 | Failure | Impact | Detection | Mitigation | Recovery |
 |---------|--------|-----------|------------|----------|
@@ -239,3 +269,9 @@ Adding `dedupe_key` plus a unique index to the existing table goes through `migr
   decides whether dedupe can share it or needs its own instance before Phase 2.
 - Does "double per-campaign volume" mean more users or more channels per user? That changes the
   in-app share and the primary write estimate.
+- How long is a password-reset token valid? The link stays usable in SQS or the DLQ until the token
+  expires (at most 4 days, the retention). If it is valid for hours or more, carry a token
+  reference in the message instead of the link.
+- Campaigns email up to 5M users, but no compliance regime or user regions are stated. Does any
+  consent, unsubscribe or data-residency rule apply? A residency rule could constrain the AWS
+  region and the email provider.

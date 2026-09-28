@@ -1,0 +1,241 @@
+# Example: /dotnet-code-review
+
+## User Input
+
+Can you check this controller before I open the PR? .NET 8, EF Core 8, JWT bearer auth.
+`Order.CustomerId` is the ASP.NET Core Identity user id (string).
+
+`src/Shop.Api/Controllers/OrdersController.cs`
+```csharp
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+
+namespace Shop.Api.Controllers;
+
+[ApiController]
+[Authorize]
+[Route("api/orders")]
+public class OrdersController(ShopDbContext db, ILogger<OrdersController> logger) : ControllerBase
+{
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<OrderDto>> Get(int id, CancellationToken ct)
+    {
+        var order = await db.Orders
+            .AsNoTracking()
+            .Where(o => o.Id == id)
+            .Select(o => new OrderDto(o.Id, o.Status, o.Total, o.CreatedAt))
+            .FirstOrDefaultAsync(ct);
+        return order is null ? NotFound() : order;
+    }
+
+    [HttpGet("mine")]
+    public ActionResult<List<OrderDto>> Mine()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        return db.Orders.ToList()
+            .Where(o => o.CustomerId == userId)
+            .OrderByDescending(o => o.CreatedAt)
+            .Select(o => new OrderDto(o.Id, o.Status, o.Total, o.CreatedAt))
+            .ToList();
+    }
+
+    [HttpPost("{id:int}/cancel")]
+    public IActionResult Cancel(int id)
+    {
+        var order = db.Orders.Find(id);
+        if (order is null) return NotFound();
+
+        try
+        {
+            using var http = new HttpClient();
+            var resp = http.PostAsync(
+                $"https://carrier.example.com/shipments/{order.TrackingNumber}/void", null).Result;
+            resp.EnsureSuccessStatusCode();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Carrier void failed");
+        }
+
+        order.Status = OrderStatus.Cancelled;
+        order.CancelledAt = DateTime.Now;
+        db.SaveChanges();
+        logger.LogInformation($"Order {id} cancelled");
+        return NoContent();
+    }
+}
+```
+
+## Skill Output
+
+# .NET Code Review — `OrdersController` (get / list / cancel orders)
+
+**Blast radius:** HIGH — public customer-facing API that reads and cancels orders and calls an external carrier.
+**Findings:** Blocker 1 · Major 4 · Minor 2 · Nit 1
+**Verdict:** REQUEST CHANGES
+
+## Summary
+The controller returns one order, lists the caller's orders, and cancels an order after asking the
+carrier to void its shipment. Any signed-in user can read or cancel any order by id (BLOCKER); the
+cancel path blocks on `.Result` with a per-call `HttpClient` and marks the order cancelled even when
+the carrier call failed; "my orders" loads the whole `Orders` table. Hence REQUEST CHANGES.
+No project context — reviewing against general .NET practice.
+
+## Findings
+### 🔴 BLOCKER
+#### [B-1] No ownership check on `Get` and `Cancel` (IDOR)
+**Location:** `OrdersController.cs:16-20`, `OrdersController.cs:38-39`
+**Problem:** `[Authorize]` only proves the caller is signed in. Both actions look the order up by
+`id` alone, so user A calling `GET /api/orders/1042` or `POST /api/orders/1042/cancel` reads or
+cancels user B's order. Ids are ints, so enumeration is trivial.
+**Impact:** Leak of every customer's order data and unauthorized cancellation of other people's orders.
+**Fix:** Scope the lookup to the caller in both actions (`Cancel`: see M-1); return 404, not 403,
+so ids can't be probed.
+```csharp
+// before
+.Where(o => o.Id == id)
+// after
+var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+...
+.Where(o => o.Id == id && o.CustomerId == userId)
+```
+
+### 🟠 MAJOR
+#### [M-1] Sync-over-async and blocking EF calls in `Cancel`
+**Location:** `OrdersController.cs:36`, `:38`, `:44-45`, `:55`
+**Problem:** `PostAsync(...).Result` blocks a thread-pool thread for the whole carrier round trip,
+and `Find`/`SaveChanges` are the blocking EF variants. ASP.NET Core has no `SynchronizationContext`,
+so this doesn't deadlock — it starves the thread pool under load. No `CancellationToken` either.
+**Impact:** A slow carrier drives up latency for every endpoint on the instance, not just this one.
+**Fix:**
+```csharp
+// before
+public IActionResult Cancel(int id)
+// after
+public async Task<IActionResult> Cancel(int id, CancellationToken ct)
+{
+    var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+    var order = await db.Orders
+        .FirstOrDefaultAsync(o => o.Id == id && o.CustomerId == userId, ct);
+    if (order is null) return NotFound();
+    ... // carrier call: M-2 / M-3
+    await db.SaveChangesAsync(ct);
+```
+
+#### [M-2] `new HttpClient()` per request
+**Location:** `OrdersController.cs:43-45`
+**Problem:** Each call creates and disposes its own handler and connection, leaving sockets in
+TIME_WAIT; the `HttpResponseMessage` from L44 is never disposed.
+**Impact:** Socket exhaustion under load, plus a fresh TCP/TLS handshake on every cancel.
+**Fix:** Typed client through `IHttpClientFactory`, injected into the controller.
+```csharp
+// before
+using var http = new HttpClient();
+// after — Program.cs
+builder.Services.AddHttpClient<CarrierClient>(c =>
+    c.BaseAddress = new Uri("https://carrier.example.com/"));
+public sealed class CarrierClient(HttpClient http)
+{
+    public async Task VoidShipmentAsync(string trackingNumber, CancellationToken ct)
+    {
+        using var resp = await http.PostAsync(
+            $"shipments/{Uri.EscapeDataString(trackingNumber)}/void", null, ct);
+        resp.EnsureSuccessStatusCode();
+    }
+}
+```
+
+#### [M-3] Carrier failure swallowed, order marked cancelled anyway (slop scan)
+**Location:** `OrdersController.cs:48-51`, `:53-55`
+**Problem:** `catch (Exception)` logs a warning and falls through to L53, so a failed void
+(carrier 5xx, timeout, bad tracking number) still sets `Status = Cancelled` and returns 204.
+**Impact:** The customer sees "cancelled" while the parcel ships; nobody is alerted beyond a warning log.
+**Fix:** Stop on failure and tell the client; catch only carrier errors and timeouts.
+```csharp
+// before
+catch (Exception ex) { logger.LogWarning(ex, "Carrier void failed"); }
+// after
+try
+{
+    await carrier.VoidShipmentAsync(order.TrackingNumber, ct);
+}
+catch (Exception ex) when (ex is HttpRequestException
+                        || (ex is TaskCanceledException && !ct.IsCancellationRequested)) // HttpClient timeout
+{
+    logger.LogWarning(ex, "Carrier void failed for order {OrderId}", id);
+    return Problem(statusCode: StatusCodes.Status502BadGateway,
+        title: "The shipment could not be cancelled. Try again later.");
+}
+```
+
+#### [M-4] `ToList()` before `Where` in `Mine`; list is unbounded
+**Location:** `OrdersController.cs:25-32`
+**Problem:** `db.Orders.ToList()` executes `SELECT * FROM Orders` and tracks every entity; the
+filter, sort and projection then run in memory. There is also no paging and no `CancellationToken`.
+**Impact:** Time and memory grow with the total order count, not the caller's; one request loads the table.
+**Fix:** Keep the query as `IQueryable` so it translates to SQL, and bound it.
+```csharp
+// before
+return db.Orders.ToList()
+    .Where(o => o.CustomerId == userId)
+// after
+return await db.Orders
+    .Where(o => o.CustomerId == userId)
+    .OrderByDescending(o => o.CreatedAt)
+    .Skip((page - 1) * pageSize).Take(pageSize)   // pageSize validated and capped, e.g. <= 100
+    .Select(o => new OrderDto(o.Id, o.Status, o.Total, o.CreatedAt))
+    .ToListAsync(ct);   // Mine(int page, int pageSize, CancellationToken ct) is now async
+```
+
+### 🟡 MINOR
+#### [m-1] String interpolation in a log call
+**Location:** `OrdersController.cs:56`
+**Problem:** `$"Order {id} cancelled"` is formatted before the logger sees it, so `OrderId` is not a
+structured property and the string is built even when Information is disabled (CA2254).
+**Impact:** Logs can't be queried by order id.
+**Fix:**
+```csharp
+// before
+logger.LogInformation($"Order {id} cancelled");
+// after
+logger.LogInformation("Order {OrderId} cancelled", id);
+```
+
+#### [m-2] `DateTime.Now` for `CancelledAt`
+**Location:** `OrdersController.cs:54`
+**Problem:** Server-local time, which differs between hosts and shifts with DST; untestable.
+**Impact:** Inconsistent with UTC timestamps elsewhere; tests can't pin the value.
+**Fix:** Inject `TimeProvider time` (register `builder.Services.AddSingleton(TimeProvider.System);`).
+```csharp
+// before
+order.CancelledAt = DateTime.Now;
+// after
+order.CancelledAt = time.GetUtcNow().UtcDateTime;
+```
+
+### 💭 NIT
+- `OrdersController.cs:53-54` — the status transition could live on the entity (`order.Cancel(now)`) so every caller applies the same rule.
+
+## Questions
+- Can support/admin roles read or cancel any order? If so, B-1's fix needs a policy (e.g. `IAuthorizationService` with a resource handler), not just the `CustomerId` filter.
+- Which order states are cancellable? `Cancel` accepts shipped, delivered, and already-cancelled orders; if that's not intended it's a MAJOR.
+- Can an order exist without a `TrackingNumber` (not yet handed to the carrier)? Then `Cancel` should skip the carrier call rather than POST to `shipments//void`.
+- Is this API bearer-only? If cookie auth is ever enabled for it, `POST .../cancel` needs antiforgery.
+
+## Checked OK
+- Slop scan: no `Skip`/`[Ignore]`, `#pragma`/`NoWarn`, `!`, or TODOs in the file; the one hit is M-3. No tests were supplied (see Follow-up).
+- Async: `Get` is fully async and passes `ct` to `FirstOrDefaultAsync`; no `async void`. Issues elsewhere → M-1.
+- Dependency injection and lifetimes: OK — scoped `ShopDbContext` and `ILogger<T>` via primary constructor into a controller; no captive dependency.
+- EF Core: `Get` filters and projects to `OrderDto` in SQL (constructor projections translate); no N+1 or `SaveChanges` in a loop. Issue → M-4.
+- HttpClient and Disposal: covered by M-2 (per-call client, undisposed response); nothing else to dispose.
+- Nullability and exceptions: OK — `FindFirstValue` result used only in a comparison; no `throw ex;`.
+- ASP.NET Core: `[ApiController]` + `{id:int}` route constraints validate input; controller-level `[Authorize]`; no entity bound from the body, no `ex.Message` returned. Issue → B-1.
+- Logging: `LogWarning(ex, ...)` passes the exception correctly; no secrets or PII logged. Issue → m-1.
+- General correctness: no money math or string comparisons here. Issue → m-2.
+
+## Follow-up (out of scope)
+- The carrier void and the DB save are not atomic: if `SaveChangesAsync` fails after a successful void, the shipment is voided but the order stays open. An outbox or idempotent retry would close that gap.
+- No tests for `OrdersController`; add integration tests (`WebApplicationFactory` + the production database engine) for ownership, cancel-on-carrier-failure, and `Mine` filtering.
+- Add a timeout/resilience handler to `CarrierClient` if the project uses one elsewhere (`AddStandardResilienceHandler`).

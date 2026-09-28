@@ -1,0 +1,264 @@
+# Example: dotnet-code-refactor
+
+## User Input
+
+"Clean up OrderService.PlaceOrderAsync in src/Shop/Orders/OrderService.cs — it's nested too deep, the validation is copy-pasted, and config reads are all over the place. Apply it, same behavior, don't commit."
+
+Project facts available to the agent:
+- .NET 8, `<Nullable>enable</Nullable>`, no `TreatWarningsAsErrors`; `.editorconfig` at the root. No IDE in use — the agent edits files directly.
+- `services.AddOrders(configuration)` in src/Shop/Orders/OrdersModule.cs registers `OrderService` as scoped; Program.cs uses `WebApplication.CreateBuilder` (appsettings.json loaded with `reloadOnChange: true`). Production database: PostgreSQL (Npgsql).
+- tests/Shop.Tests: xUnit + NSubstitute. `TestDbFactory` implements `IDbContextFactory<ShopDbContext>` over SQLite in-memory and seeds `Seed.RegularId` (not VIP), `Seed.VipId`, and product `A-1` priced 12.30. The 2 existing `OrderServiceTests` only check `Received()` on the fulfillment mock.
+- `PlaceOrderRequest(Guid CustomerId, List<OrderLineRequest> Lines, bool ExpressShipping)` and `OrderLineRequest(string Sku, int Quantity)` are positional records.
+- Neighboring services keep private helpers at the bottom of the class.
+
+src/Shop/Orders/OrderService.cs (lines 11-83):
+```csharp
+11      public async Task<Guid> PlaceOrderAsync(PlaceOrderRequest request, CancellationToken ct)
+12      {
+13          if (request.Lines.Count > 0)
+14          {
+15              foreach (var line in request.Lines)
+16              {
+17                  if (string.IsNullOrWhiteSpace(line.Sku))
+18                      throw new ArgumentException("SKU is required.", nameof(request));
+19                  if (line.Quantity <= 0)
+20                      throw new ArgumentException($"Quantity must be positive for {line.Sku}.", nameof(request));
+21              }
+22              await using var db = await dbFactory.CreateDbContextAsync(ct);
+23              var customer = await db.Customers.FindAsync([request.CustomerId], ct);
+24              if (customer != null)
+25              {
+26                  var order = new Order { Id = Guid.NewGuid(), CustomerId = customer.Id, Currency = config["Orders:DefaultCurrency"] ?? "USD" };
+27                  foreach (var line in request.Lines)
+28                  {
+29                      var product = await db.Products.SingleOrDefaultAsync(p => p.Sku == line.Sku, ct);
+30                      if (product != null)
+31                      {
+32                          order.Lines.Add(new OrderLine { Sku = line.Sku, Quantity = line.Quantity, UnitPrice = product.Price });
+33                      }
+34                      else
+35                      {
+36                          throw new InvalidOperationException($"Unknown SKU '{line.Sku}'.");
+37                      }
+38                  }
+39                  order.Total = order.Lines.Sum(l => l.UnitPrice * l.Quantity);
+40                  if (customer.IsVip)
+41                      order.Total = Math.Round(order.Total * 0.95m, 2);
+42                  db.Orders.Add(order);
+43                  await db.SaveChangesAsync(ct);
+44                  if (request.ExpressShipping)
+45                      await fulfillment.EnqueueAsync(config["Orders:ExpressQueue"] ?? "express", order.Id, ct);
+46                  else
+47                      await fulfillment.EnqueueAsync(config["Orders:StandardQueue"], order.Id, ct);
+48                  return order.Id;
+49              }
+50              else
+51              {
+52                  throw new KeyNotFoundException($"Customer {request.CustomerId} not found.");
+53              }
+54          }
+55          return Guid.Empty;
+56      }
+57
+58      public async Task<decimal> QuoteAsync(PlaceOrderRequest request, CancellationToken ct)
+59      {
+60          foreach (var line in request.Lines)
+61          {
+62              if (string.IsNullOrWhiteSpace(line.Sku))
+63                  throw new ArgumentException("SKU is required.", nameof(request));
+64              if (line.Quantity <= 0)
+65                  throw new ArgumentException($"Quantity must be positive for {line.Sku}.", nameof(request));
+66          }
+67          await using var db = await dbFactory.CreateDbContextAsync(ct);
+68          var skus = request.Lines.Select(l => l.Sku).ToList();
+69          var prices = await db.Products.Where(p => skus.Contains(p.Sku)).ToDictionaryAsync(p => p.Sku, p => p.Price, ct);
+70          return Calc(request.Lines, prices);
+71      }
+72
+73      private static decimal Calc(List<OrderLineRequest> lines, Dictionary<string, decimal> prices) =>
+74          lines.Sum(l => prices[l.Sku] * l.Quantity);
+```
+Constructor (line 6): `public class OrderService(IDbContextFactory<ShopDbContext> dbFactory, IConfiguration config, IFulfillmentClient fulfillment)`.
+
+## Skill Output
+
+**What it does / callers:** `PlaceOrderAsync` validates lines, loads customer and products, prices the order, saves it, and enqueues fulfillment; `QuoteAsync` prices without saving. Callers (grep): `OrdersController.Place`, `OrdersController.Quote`.
+
+### Diagnosis
+| # | Smell | Location | Refactoring | Risk |
+|---|---|---|---|---|
+| 1 | Unclear name `Calc` | OrderService.cs:70,73 | Rename → `SumLineTotals` | SAFE — private; grep finds no string use |
+| 2 | Duplicate validation, must change together | OrderService.cs:15-21, 60-66 | Extract Method `ValidateLines` | SAFE |
+| 3 | Deep nesting (`if` → `if` → `foreach` → `if`) | OrderService.cs:13-55 | Guard clauses | SAFE — conditions are side-effect-free |
+| 4 | Scattered config reads | OrderService.cs:26,45,47 | Bound `IOptionsMonitor<OrderOptions>` | RISKY — constructor + DI registration |
+| 5 | Inline VIP discount math | OrderService.cs:39-41 | Extract Method | ⛔ DANGEROUS — money |
+
+⛔ Stopped before planning: smell 5 is money. Moving it is mechanical, but any slip changes what customers pay, and characterizing it surfaced a rounding question (see recommendations). Safer path: leave it in place now; a separate change after finance confirms the rounding rule. Asked the user → "Leave pricing out. Go ahead with 1-4."
+
+### Baseline
+```
+$ dotnet build
+src/Shop/Orders/OrderService.cs(47,52): warning CS8604: Possible null reference argument for parameter 'queue' in 'Task IFulfillmentClient.EnqueueAsync(string queue, Guid orderId, CancellationToken ct)'.
+Build succeeded.    1 Warning(s)    0 Error(s)
+$ dotnet test --filter "FullyQualifiedName~OrderService"
+Passed!  - Failed: 0, Passed: 2, Skipped: 0, Total: 2 - Shop.Tests.dll (net8.0)
+```
+The 2 existing tests only verify the mock → no safety net. Characterization tests first.
+
+### Characterization tests (written and green on the original code)
+tests/Shop.Tests/Orders/OrderServiceCharacterizationTests.cs:
+```csharp
+public class OrderServiceCharacterizationTests
+{
+    private readonly TestDbFactory _db = new();
+    private readonly IFulfillmentClient _fulfillment = Substitute.For<IFulfillmentClient>();
+
+    private OrderService CreateSut(Dictionary<string, string?>? settings = null)
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        return new ServiceCollection().AddOrders(config).AddSingleton<IConfiguration>(config)
+            .AddSingleton<IDbContextFactory<ShopDbContext>>(_db).AddSingleton(_fulfillment)
+            .BuildServiceProvider().GetRequiredService<OrderService>();
+    }
+
+    private static PlaceOrderRequest Request(Guid customerId, params OrderLineRequest[] lines) =>
+        new(customerId, [.. lines], ExpressShipping: false);
+
+    [Fact]
+    public async Task NoLines_ReturnsEmptyGuid_AndEnqueuesNothing()
+    {
+        Assert.Equal(Guid.Empty, await CreateSut().PlaceOrderAsync(Request(Seed.RegularId), default));
+        Assert.Empty(_fulfillment.ReceivedCalls());
+    }
+    [Theory]
+    [InlineData(" ", 1, "SKU is required. (Parameter 'request')")]
+    [InlineData("A-1", 0, "Quantity must be positive for A-1. (Parameter 'request')")]
+    public async Task InvalidLine_ThrowsSameArgumentException_FromBothEntryPoints(string sku, int qty, string message)
+    {
+        var sut = CreateSut();
+        var request = Request(Seed.RegularId, new(sku, qty));
+        var place = await Assert.ThrowsAsync<ArgumentException>(() => sut.PlaceOrderAsync(request, default)); // exact type
+        var quote = await Assert.ThrowsAsync<ArgumentException>(() => sut.QuoteAsync(request, default));
+        Assert.Equal(message, place.Message);
+        Assert.Equal(message, quote.Message);
+    }
+    [Fact]
+    public async Task UnknownCustomer_ThrowsKeyNotFound()
+    {
+        var missing = Guid.NewGuid();
+        var ex = await Assert.ThrowsAsync<KeyNotFoundException>(() => CreateSut().PlaceOrderAsync(Request(missing, new("A-1", 1)), default));
+        Assert.Equal($"Customer {missing} not found.", ex.Message);
+    }
+    [Fact]
+    public async Task UnknownSku_ThrowsInvalidOperation_AndSavesNothing()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => CreateSut().PlaceOrderAsync(Request(Seed.RegularId, new("X-9", 1)), default));
+        Assert.Equal("Unknown SKU 'X-9'.", ex.Message);
+        using var db = _db.CreateDbContext();
+        Assert.Empty(db.Orders);
+    }
+    [Fact]
+    public async Task VipDiscount_RoundsMidpointToEven() // 12.30 * 0.95 = 11.685 → 11.68 today
+    {
+        var id = await CreateSut().PlaceOrderAsync(Request(Seed.VipId, new("A-1", 1)), default);
+        using var db = _db.CreateDbContext();
+        Assert.Equal(11.68m, db.Orders.Single(o => o.Id == id).Total);
+    }
+    [Fact]
+    public async Task NoOrdersSection_UsesUsd_AndPassesNullStandardQueue()
+    {
+        var id = await CreateSut().PlaceOrderAsync(Request(Seed.RegularId, new("A-1", 2)), default);
+        await _fulfillment.Received(1).EnqueueAsync(Arg.Is<string>(q => q == null), id, Arg.Any<CancellationToken>());
+        using var db = _db.CreateDbContext();
+        Assert.Equal("USD", db.Orders.Single(o => o.Id == id).Currency);
+    }
+    [Fact]
+    public async Task OrdersSection_IsUsed_ForCurrencyAndExpressQueue()
+    {
+        var sut = CreateSut(new() { ["Orders:DefaultCurrency"] = "EUR", ["Orders:ExpressQueue"] = "exp-eu" });
+        var id = await sut.PlaceOrderAsync(Request(Seed.RegularId, new("A-1", 1)) with { ExpressShipping = true }, default);
+        await _fulfillment.Received(1).EnqueueAsync("exp-eu", id, Arg.Any<CancellationToken>());
+        using var db = _db.CreateDbContext();
+        Assert.Equal("EUR", db.Orders.Single(o => o.Id == id).Currency);
+    }
+}
+```
+`dotnet test --filter "FullyQualifiedName~OrderService"` on the original → `Passed: 10, Total: 10` (2 existing + 8 new, the Theory counts as 2).
+
+## Refactor Plan
+**Files:** `src/Shop/Orders/OrderService.cs`, `src/Shop/Orders/OrdersModule.cs`, `src/Shop/Orders/OrderOptions.cs` (new), `tests/Shop.Tests/Orders/OrderServiceCharacterizationTests.cs` (new)
+**Smell → refactoring:** Unclear name → Rename; duplicate validation → Extract Method; deep nesting → guard clauses; scattered config reads → `IOptionsMonitor<OrderOptions>`
+**Risk:** RISKY (step 4); steps 1-3 SAFE
+**Safety net:** ⚠️ weak — adding characterization tests (done above)
+**Steps:** 1. Rename `Calc` → `SumLineTotals` 2. Extract `ValidateLines(request)` from both methods 3. Guard clauses in `PlaceOrderAsync` 4. Bind the `Orders` section to `OrderOptions`, inject `IOptionsMonitor<OrderOptions>`, drop `IConfiguration`
+
+The user's "go ahead with 1-4" covers the RISKY step. Each step: edit → `dotnet build` → `dotnet test --filter "FullyQualifiedName~OrderService"`.
+
+### Step 1 — Rename `Calc` → `SumLineTotals` (SAFE)
+```
+$ grep -rnw "Calc" src tests --include='*.cs' --include='*.cshtml' --include='*.json'
+src/Shop/Orders/OrderService.cs:70:        return Calc(request.Lines, prices);
+src/Shop/Orders/OrderService.cs:73:    private static decimal Calc(List<OrderLineRequest> lines, Dictionary<string, decimal> prices) =>
+```
+No `nameof(Calc)`, XML doc, or string use. Edited both lines → build ✅ (1 warning, unchanged) → tests ✅ 10/10.
+
+### Step 2 — Extract Method `ValidateLines` (SAFE)
+Lines 15-21 and 60-66 each become `ValidateLines(request);`; the loop moves verbatim to the bottom of the class:
+```csharp
+private static void ValidateLines(PlaceOrderRequest request) { foreach (var line in request.Lines) { /* lines 17-20 verbatim */ } }
+```
+The parameter stays `request`, not `IReadOnlyList<OrderLineRequest> lines`: `nameof(request)` sets `ParamName`, which is part of `Message` ("… (Parameter 'request')"). The helper is a plain `void`, not an iterator, so it throws at the same point; inside an `async` method the exception still surfaces through the returned task, as before. Build ✅ → tests ✅ 10/10.
+
+### Step 3 — Guard clauses in `PlaceOrderAsync` (SAFE)
+Each condition inverted exactly; the bodies are unchanged:
+```csharp
+if (request.Lines.Count <= 0)   // was: if (Count > 0) { … } return Guid.Empty;
+    return Guid.Empty;
+ValidateLines(request);
+await using var db = await dbFactory.CreateDbContextAsync(ct);
+var customer = await db.Customers.FindAsync([request.CustomerId], ct);
+if (customer == null)
+    throw new KeyNotFoundException($"Customer {request.CustomerId} not found.");
+// order creation unchanged; in the loop:
+if (product == null)
+    throw new InvalidOperationException($"Unknown SKU '{line.Sku}'.");
+order.Lines.Add(new OrderLine { Sku = line.Sku, Quantity = line.Quantity, UnitPrice = product.Price });
+```
+`db` now lives to the end of the method instead of the end of the `if` block; nothing follows either, so disposal timing is the same. Build ✅ → tests ✅ 10/10.
+
+### Step 4 — Config reads → `IOptionsMonitor<OrderOptions>` (RISKY)
+`grep -rn '"Orders:' src tests` → the 3 reads plus the test settings; appsettings.json has `"Orders": { "StandardQueue": "orders-std" }` — the key matches the property name.
+```csharp
+public sealed class OrderOptions
+{
+    public const string SectionName = "Orders";
+    public string DefaultCurrency { get; set; } = "USD";    // old: config[...] ?? "USD"
+    public string ExpressQueue { get; set; } = "express";   // old: config[...] ?? "express"
+    public string? StandardQueue { get; set; }              // old: no fallback, null when missing
+}
+```
+OrdersModule: `services.Configure<OrderOptions>(configuration.GetSection(OrderOptions.SectionName));`. Constructor: `IConfiguration config` → `IOptionsMonitor<OrderOptions> options`; reads become `options.CurrentValue.X`. `IOptionsMonitor`, not `IOptions<T>`: `IOptions<T>.Value` is bound once, while `config[...]` sees appsettings.json reloads. No `ValidateOnStart()` — a new startup failure would be a behavior change.
+
+First attempt declared `public string StandardQueue { get; set; } = "";` to clear CS8604 → `NoOrdersSection_UsesUsd_AndPassesNullStandardQueue` failed (NSubstitute: `Actually received no matching calls … EnqueueAsync(*""*, …)`). Undid it by restoring that line to the text above (no git commands), then build ✅ (1 warning: CS8604, now `options.CurrentValue.StandardQueue`) → tests ✅ 10/10. `grep -rn "IConfiguration" src/Shop/Orders` → only OrdersModule.cs remains.
+
+`dotnet format --include src/Shop/Orders/OrderService.cs src/Shop/Orders/OrderOptions.cs src/Shop/Orders/OrdersModule.cs` → no changes.
+
+# Refactor Report — OrderService.PlaceOrderAsync / QuoteAsync
+**Smell → refactoring:** rename; duplicate validation → Extract Method; deep nesting → guard clauses; scattered config → `IOptionsMonitor<OrderOptions>` **Risk:** RISKY (steps 1-3 SAFE)
+## Changes
+- OrderService.cs: `Calc` → `SumLineTotals`; `ValidateLines` shared by both methods; `PlaceOrderAsync` nesting 4 → 2 levels; `IConfiguration` → `IOptionsMonitor<OrderOptions>`
+- OrderOptions.cs (new): `Orders` section with the old fallbacks as initializers
+- OrdersModule.cs: `Configure<OrderOptions>` registration
+- OrderServiceCharacterizationTests.cs (new): 8 characterization tests
+## Verification
+- Build: ✅ (warnings: before 1 → after 1, same CS8604)   Tests: ✅ 10 passed (8 characterization tests added)
+- Behavior evidence: no lines → `Guid.Empty`; `" "` SKU / qty 0 → same `ArgumentException` messages from both methods; unknown customer → `KeyNotFoundException`; `X-9` → `InvalidOperationException`, nothing saved; VIP 12.30 → 11.68; no `Orders` section → "USD" and null queue; EUR/exp-eu settings → used. All identical before and after.
+## Deliberately not changed
+- VIP discount (lines 39-41): DANGEROUS (money); the user said to leave it out.
+- `QuoteAsync` keeps `async`/`await`. Returning the query task without `await` would dispose `db` while the query may still run: broken on Npgsql, yet green on the SQLite fixture.
+- One query per line in the product loop (line 29): a performance change on a hot query → `performance-review`.
+- CS8604 on the standard queue: fixing it means deciding what a missing queue should do (see below).
+## Behavior changes recommended (not applied)
+- 🟠 MAJOR VIP discount uses banker's rounding — `OrderService.cs:41` — `Math.Round(decimal, 2)` defaults to `MidpointRounding.ToEven`, so 11.685 → 11.68, not 11.69 → confirm the rule with finance; if it should be `MidpointRounding.AwayFromZero`, change it and the characterization test together.
+- 🟠 MAJOR Empty order silently returns `Guid.Empty` — `OrderService.cs:13,55` — the controller gets a success with an empty id → throw `ArgumentException` (or return 400) in its own change, updating `NoLines_ReturnsEmptyGuid_AndEnqueuesNothing`.
+- 🟡 MINOR Missing `Orders:StandardQueue` passes `null` to fulfillment — `OrderService.cs:47` — fails later, far from the cause → give it a default, or fail fast with `AddOptions<OrderOptions>().Bind(...).Validate(o => o.StandardQueue is not null).ValidateOnStart()`.

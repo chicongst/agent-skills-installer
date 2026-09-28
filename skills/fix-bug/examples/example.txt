@@ -1,0 +1,137 @@
+# Example: /fix-bug
+
+## User Input
+the reminders job is not working, can you fix it?
+
+    $ python -m billing.send_reminders invoices_2026-09.csv
+    Traceback (most recent call last):
+      ...
+      File "billing/send_reminders.py", line 10, in main
+        overdue = find_overdue(invoices, date.today())
+      File "billing/reminders.py", line 5, in find_overdue
+        if inv["paid_on"] is None and inv["due_date"] < today
+                                      ^^^^^^^^^^^^^^^^^^^^^^^
+    TypeError: '<' not supported between instances of 'NoneType' and 'datetime.date'
+
+## Intake (first look before asking)
+Opened the frames and the loader that feeds them:
+
+    billing/reminders.py
+     1  def find_overdue(invoices, today):
+     2      return [
+     3          inv
+     4          for inv in invoices
+     5          if inv["paid_on"] is None and inv["due_date"] < today
+     6      ]
+
+    billing/loader.py
+     5  def parse_date(value):
+     6      return date.fromisoformat(value) if value else None
+     ...
+     9  def load_invoices(path):
+    10      with open(path, newline="") as f:
+    11          return [
+    12              {
+    13                  "id": row["invoice_id"],
+    14                  "amount": float(row["amount"]),
+    15                  "due_date": parse_date(row.get("due")),
+    16                  "paid_on": parse_date(row.get("paid_on")),
+    17              }
+    18              for row in csv.DictReader(f)
+    19          ]
+
+    $ head -1 invoices_2026-09.csv
+    invoice_id,customer_id,amount,due_date,paid_on
+
+    $ git log --oneline -5 -- billing/loader.py billing/reminders.py billing/export.py
+    3f9c2a1 rename export columns to snake_case (due -> due_date)
+    b71e0d4 reminders: skip paid invoices
+    9a4c113 add invoice CSV loader
+
+    $ git show --stat 3f9c2a1
+     billing/export.py | 2 +-
+
+The code and history already answer "what changed" and "where does None come from",
+so only what the code can't tell is asked (one batch):
+
+  1. Did this job work on last month's CSV? yes / no / never ran it
+  2. Can a real invoice have no due date (e.g. drafts)? yes / no
+  3. Where does it fail? local / cron server / both
+
+User: 1. yes, august was fine  2. no, due date is mandatory  3. both
+
+## Skill Output
+
+## Bug: send_reminders crashes on every export made after the column rename
+**Confidence**: High — reproduced with a failing test, cause traced to billing/loader.py:15, fix verified against the test and the original command
+
+### Symptom
+- **Expected**: `python -m billing.send_reminders invoices_2026-09.csv` prints one reminder per unpaid, overdue invoice
+- **Actual**: `TypeError: '<' not supported between instances of 'NoneType' and 'datetime.date'` at billing/reminders.py:5
+- **Trigger / frequency / environment**: any CSV exported after commit 3f9c2a1 that contains an unpaid invoice; always; local and cron server (user). August's file worked (user) — it was exported before the rename.
+
+### Investigation
+- Path traced: send_reminders.py:9 `load_invoices(path)` → loader.py:15 `parse_date(row.get("due"))` → loader.py:6 returns `None` for a missing value → reminders.py:5 compares `None < today`. Expected and actual first diverge at loader.py:15: the CSV header has `due_date` (see `head -1` above), so `row.get("due")` is `None` for every row.
+- Depends on: the CSV header written by billing/export.py (`COLUMNS`); no shared state, env vars, or concurrency on this path.
+- History: 3f9c2a1 "rename export columns to snake_case (due -> due_date)" changed only billing/export.py; billing/loader.py was not updated. This explains "August was fine": that file still had the `due` header.
+- Reproduction: new test `tests/test_loader.py::test_load_invoices_reads_due_date_from_export_header` builds a CSV from `billing.export.COLUMNS` and loads it:
+
+      $ python -m pytest -q tests/test_loader.py
+      >       assert inv["due_date"] == date(2026, 9, 1)
+      E       assert None == datetime.date(2026, 9, 1)
+      FAILED tests/test_loader.py::test_load_invoices_reads_due_date_from_export_header
+      1 failed
+
+  Same failure mode as the report: `due_date` is `None` for a row that has one.
+
+### Root cause
+Commit 3f9c2a1 renamed the export column `due` to `due_date` (billing/export.py), but billing/loader.py:15 still reads `row.get("due")`
+→ `.get` returns `None` for the missing key and parse_date (loader.py:6) passes it through as `None`
+→ every invoice's `due_date` is `None`
+→ the first unpaid invoice reaches `inv["due_date"] < today` at billing/reminders.py:5 and raises `TypeError`.
+Paid invoices don't crash because `inv["paid_on"] is None` short-circuits first; the crash comes from the first unpaid row.
+
+### Fix
+```diff
+--- a/billing/loader.py
++++ b/billing/loader.py
+@@ -12,6 +12,6 @@ def load_invoices(path):
+             {
+                 "id": row["invoice_id"],
+                 "amount": float(row["amount"]),
+-                "due_date": parse_date(row.get("due")),
++                "due_date": parse_date(row.get("due_date")),
+                 "paid_on": parse_date(row.get("paid_on")),
+             }
+```
+No guard added in find_overdue: a `None` due date is not valid data (user: due date is mandatory), so skipping it there would hide the bug.
+
+Regression test (tests/test_loader.py, written in step 3 and seen failing above):
+```python
+def test_load_invoices_reads_due_date_from_export_header(tmp_path):
+    path = tmp_path / "invoices.csv"
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=COLUMNS)
+        writer.writeheader()
+        writer.writerow({"invoice_id": "INV-1042", "customer_id": "C-7",
+                         "amount": "120.00", "due_date": "2026-09-01", "paid_on": ""})
+
+    [inv] = load_invoices(path)
+
+    assert inv["due_date"] == date(2026, 9, 1)
+```
+It uses `COLUMNS` from billing/export.py, so a future rename breaks this test instead of the cron job.
+
+**Behavior change for other callers**: CSVs with the old `due` header (exported before 3f9c2a1) now load with `due_date = None`. Callers of `load_invoices` (grep: only send_reminders.py:9) run on fresh exports, so none are affected in practice — flagging it in case old files are ever re-processed.
+**Same pattern elsewhere**:
+
+    $ grep -rn '"due"' --include='*.py' .
+    billing/aging_report.py:12:        due = parse_date(row.get("due"))
+
+Same stale column name, same silent `None`. Not changed here — it is a separate code path and needs its own test; recommend fixing it next the same way.
+Also noted, not changed: loader.py uses `row.get(...)` for required columns, which is what turned a missing column into a `None` instead of a `KeyError`.
+
+### Verification
+- [x] Regression test `test_load_invoices_reads_due_date_from_export_header` fails before, passes after — `python -m pytest -q tests/test_loader.py`: before `assert None == datetime.date(2026, 9, 1)`, 1 failed; after `1 passed`
+- [x] Original reproduction passes — `python -m billing.send_reminders invoices_2026-09.csv` → `reminder: INV-1042 120.00`, no traceback
+- [x] Surrounding suite passes — `python -m pytest -q` → all passed

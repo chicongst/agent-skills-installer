@@ -40,11 +40,14 @@ If there are no measurements, do not produce numbers. Output a measurement plan 
 | Layer | Tools |
 |---|---|
 | PostgreSQL | `EXPLAIN (ANALYZE, BUFFERS)`, `pg_stat_statements` (mean/stddev/max per query, not percentiles), `auto_explain` for slow plans in production |
+| MySQL 8 | `EXPLAIN ANALYZE` (8.0.18+), `performance_schema` statement digests, slow query log |
+| SQL Server | Actual execution plan, Query Store |
+| MongoDB | `explain("executionStats")`, profiler |
 | App CPU/alloc | Sampling profilers and flame graphs: py-spy, async-profiler, pprof, dotnet-trace, 0x/clinic |
 | Request path | Distributed traces/APM spans; include pool-wait and queue-wait spans |
 | Browser | Field Core Web Vitals (RUM) first; Lighthouse is a lab signal |
 
-Reading `EXPLAIN ANALYZE` (PostgreSQL):
+Reading `EXPLAIN ANALYZE` (PostgreSQL; other engines expose the same ideas — estimated vs actual rows, per-loop cost, spills — under different names):
 - It **executes** the statement. Wrap data-modifying statements in `BEGIN; … ROLLBACK;`.
 - Node `actual time` is per loop. Multiply by `loops` for the total, and subtract child times to get a node's own cost.
 - Compare estimated `rows` with actual `rows`. A 10×+ gap means the planner is choosing blind. Find out why (a join on a lookup value, stale stats, correlated columns) before adding indexes.
@@ -72,7 +75,7 @@ Prefer fixes that remove work (don't compute it, compute it once, index it) over
 ## Severity
 
 Use the shared scale: 🔴 BLOCKER, 🟠 MAJOR, 🟡 MINOR, 💭 NIT. In performance terms:
-- **🔴 BLOCKER**: can take the service down or lose data: unbounded memory, pool exhaustion under normal load, or a proposed fix whose rollout would lock or rewrite a hot table without mitigation.
+- **🔴 BLOCKER**: can take the service down or lose data: unbounded memory, pool exhaustion under normal load, a hot path that already breaches its timeout. (A risky rollout of your own proposed fix is not a severity — put it in that fix's **Rollout risk** with its mitigation.)
 - **🟠 MAJOR**: a measured bottleneck that breaks the target on a hot path, or an N+1.
 - **🟡 MINOR**: a measurable but small cost, or a missing measurement that blocks a decision.
 - **💭 NIT**: hygiene, such as `SELECT *` or unclear ordering, with no measured cost.
@@ -123,3 +126,5 @@ Use the shared scale: 🔴 BLOCKER, 🟠 MAJOR, 🟡 MINOR, 💭 NIT. In perform
 ```
 
 Order findings by severity, then by expected gain (measured share when gains are estimates). Omit sections that have no content, except Baseline and Plan. A worked example is in `examples/example.txt` (if installed). `template.md` mirrors this format.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

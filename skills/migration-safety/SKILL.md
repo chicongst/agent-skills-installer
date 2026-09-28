@@ -47,6 +47,10 @@ Collect these before judging anything. If a fact is missing, ask the user (use A
 | `ADD UNIQUE` / `PRIMARY KEY` | ACCESS EXCLUSIVE | Index build under the lock | `CREATE UNIQUE INDEX CONCURRENTLY`, then `ADD CONSTRAINT … UNIQUE USING INDEX` (brief) |
 | `DROP INDEX` | ACCESS EXCLUSIVE | Brief | `DROP INDEX CONCURRENTLY` |
 | `CREATE TRIGGER` / `DROP TRIGGER` | SHARE ROW EXCLUSIVE / ACCESS EXCLUSIVE | Brief | Fine with `lock_timeout` |
+| `REINDEX` | Blocks writes (and reads that use the index) | Full rebuild | `REINDEX INDEX CONCURRENTLY` (PG12+); a failure leaves an INVALID `_ccnew` index to drop |
+| `ALTER TYPE … ADD VALUE` (enum) | Brief lock on the type; no table rewrite | Catalog-only | Before PG12 it cannot run inside a transaction block; on PG12+ it can, but the new value is unusable until that transaction commits — don't use it in the same migration. Deploy code that writes the value only after the migration |
+| Change an `int` primary key to `bigint` | ACCESS EXCLUSIVE | Rewrite of the table, every index, and each referencing FK column | New `bigint` column + trigger + batched backfill + `CREATE UNIQUE INDEX CONCURRENTLY`, then swap the PK in one short transaction; move the sequence and referencing FKs the same way. Start before the sequence nears 2^31 |
+| `ATTACH PARTITION` | SHARE UPDATE EXCLUSIVE on the parent (PG12+), ACCESS EXCLUSIVE on the attached table | Scans the attached table to check the bound | First add a matching `CHECK … NOT VALID` + `VALIDATE` on it — the scan is then skipped. `DETACH PARTITION … CONCURRENTLY` from PG14 |
 
 ## Rules
 
@@ -77,6 +81,8 @@ Collect these before judging anything. If a fact is missing, ask the user (use A
 - State `ALGORITHM=INSTANT` or `ALGORITHM=INPLACE, LOCK=NONE` explicitly; the statement then errors instead of silently falling back to a blocking table copy.
 - Metadata-lock waits queue like PostgreSQL's; `lock_wait_timeout` defaults to one year — set it to a few seconds in the migration session.
 - For changes that need a table copy on a large table, use an online schema-change tool (gh-ost, pt-online-schema-change).
+- `ALGORITHM=INSTANT` covers adding/dropping columns (any position from 8.0.29), renaming columns, and changing defaults; a table allows a limited number of instant row versions (64) before a rebuild is required — check `INFORMATION_SCHEMA.INNODB_TABLES.TOTAL_ROW_VERSIONS`.
+- Adding an index is `INPLACE, LOCK=NONE` but still takes a brief metadata lock at start and end, and replicas apply it single-threaded — budget replica lag.
 
 ## Severity
 
@@ -141,3 +147,5 @@ A worked example is in `examples/example.txt` (if installed). `template.md` mirr
 ```
 
 Omit **Findings** when planning from scratch with no proposed migration to review. Verdicts (same scale as `release-readiness`): **GO** — no BLOCKER or MAJOR open. **GO WITH CONDITIONS** — no BLOCKER; each open MAJOR or checklist item has an owner and a deadline before the migration starts, and is re-checked then. **NO-GO** — any BLOCKER (an unknown writer or deploy model counts as one until answered); list what would flip the verdict.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

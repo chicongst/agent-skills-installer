@@ -123,3 +123,5 @@ After:
 ```
 
 Order findings by severity, then by impact. Omit **Fine As-Is** if empty. Keep **Top Priorities** to 1–5 items.
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: "Use when deciding if a change set (PR URL, branch vs base, or pasted diff) is ready to merge — \"review this PR\", \"is this ready to merge\". Judges the change as a unit: scope, size, hidden changes, blast radius, tests, rollout/rollback, description, plus blocking defects in changed lines; ends in APPROVE / REQUEST CHANGES / NEEDS DISCUSSION. Not for code quality of a file or module outside a change set (use `code-review`, or `dotnet-code-review` for C#), a scorecard audit (`code-audit`), a whole release (`release-readiness`), or a migration deep-dive (`migration-safety`)."
+description: "Use when deciding if a change set (PR URL, branch vs base, or pasted diff) is ready to merge — \"review this PR\", \"is this ready to merge\". Judges the change as a unit: scope, size, hidden changes, blast radius, tests, rollout/rollback, description, plus blocking defects in changed lines; ends in REQUEST CHANGES / NEEDS DISCUSSION / APPROVE WITH COMMENTS / APPROVE. Not for code quality of a file or module outside a change set (use `code-review`, or `dotnet-code-review` for C#), a scorecard audit (`code-audit`), a whole release (`release-readiness`), or a migration deep-dive (`migration-safety`)."
 ---
 
 # PR Review
@@ -43,7 +43,7 @@ A focused correctness pass on the diff and the code it directly calls — not a 
 - Error and failure paths: what happens when a dependency (DB, cache, HTTP call) fails? Unhandled async rejections, swallowed errors, fail-open vs fail-closed on security controls.
 - Concurrency and atomicity: multi-step writes without a transaction, check-then-act races, non-atomic read-modify-write.
 - Trust boundaries: input validated server-side, no secrets committed, no auth bypass, error responses don't leak internals.
-- Contracts: status codes and response shapes (400 malformed/wrong type, 422 well-formed but semantically invalid; 401 vs 403; 409 conflict), pagination style consistent with the rest of the API, no silent breaking change for existing clients.
+- Contracts: status codes, error shape, and pagination style consistent with the rest of the API (cite the existing endpoint that sets the convention; `api-design` holds the defaults when there is none); no silent breaking change for existing clients.
 - Response handling: exactly one response or `next()` per request path.
 - New wrappers around a third-party dependency: worth it only where they add value (narrower interface, error translation, test seam); pass-through wrappers are a finding.
 
@@ -61,7 +61,7 @@ If you can run the code safely (a copy in a temp dir, an existing test command),
 - Can operators see it working or failing (log/metric on the new failure path)?
 
 ### 7. Project conventions
-Follow the conventions the project already has — layout, naming, error handling, test style, migration style. If there is no established convention, don't invent one; for new folders, group by feature/domain. Cite the file that shows a convention when flagging divergence from it. Framework rules apply only if the project has them (e.g. NestJS: request DTOs validated with class-validator).
+Follow the conventions the project already has — layout, naming, error handling, test style, migration style. If there is no established convention, don't invent one; for new folders, group by feature/domain. Cite the file that shows a convention when flagging divergence from it. Framework-specific rules apply only when the project already follows them.
 
 ## Severity
 
@@ -72,9 +72,11 @@ Follow the conventions the project already has — layout, naming, error handlin
 
 ## Verdict rules
 
-- **REQUEST CHANGES** — any BLOCKER, or any MAJOR the author has not explicitly agreed to defer to a tracked follow-up.
-- **NEEDS DISCUSSION** — no blocking defect, but a decision only the team can make (product policy, design direction, rollout risk) must be answered before merge.
-- **APPROVE** — only MINOR/NIT remain; say "approve with nits" if you listed any.
+Pick exactly one, applying the rules in order (same scale as `code-review`):
+1. **REQUEST CHANGES** — any BLOCKER, or any MAJOR the author has not explicitly agreed to defer to a tracked follow-up.
+2. **NEEDS DISCUSSION** — no blocking defect, but a decision only the team can make (product policy, design direction, rollout risk) must be answered before merge.
+3. **APPROVE WITH COMMENTS** — at least one MINOR remains (NITs may accompany); mergeable, fixes can follow.
+4. **APPROVE** — NITs or nothing.
 
 ## Rules
 
@@ -134,7 +136,7 @@ Follow the conventions the project already has — layout, naming, error handlin
 - [specific, true observation]
 
 ## Verdict
-**[APPROVE / REQUEST CHANGES / NEEDS DISCUSSION]** — [one sentence tied to the verdict rules]
+**[REQUEST CHANGES / NEEDS DISCUSSION / APPROVE WITH COMMENTS / APPROVE]** — [one sentence tied to the verdict rules]
 
 ## Merge Checklist
 - [ ] CI passing
@@ -145,3 +147,5 @@ Follow the conventions the project already has — layout, naming, error handlin
 ```
 
 `template.md` mirrors this format. A worked example is in `examples/example.txt` (if installed).
+
+If a skill named here isn't installed, say which one fits, then help as far as this skill's own scope and rules allow.

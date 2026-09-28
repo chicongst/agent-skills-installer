@@ -31,107 +31,90 @@ Deploys are limited to one per day to reduce risk.
 # Document Review: Deployment Process
 
 **Type**: Process guideline
-**Audience**: assumed — newcomer with zero project context (not stated in the doc)
+**Audience**: assumed — newcomer with no project context (not stated in the doc)
+**Findings**: 🔴 3 · 🟠 4 · 🟡 2 · 💭 0
+**Verdict**: Not ready — a new engineer following this would deploy without approval and could not roll back.
 
 ## Summary
-This document reads as a summary of a process the author already knows, not as
-instructions someone else can follow. Three of the four steps are not executable as
-written, the rollback section contains no procedure, and the Notes section
-contradicts itself on deploy frequency. Not safe to hand to a new engineer.
+This reads as a reminder for someone who already knows the process, not as instructions
+someone else can follow: three of four steps are not executable, Rollback has no
+procedure, and Notes contradicts itself on deploy frequency. The numbered-step shape is
+right; it needs the missing detail.
 
-## Critical
+## Findings
 
-### Step 3 cannot be executed — no definition of "looks good"
-**Location**: Steps > item 3
-**Problem**: "Verify the deploy looks good" gives the reader no criteria. A newcomer
-has no way to tell success from a partial failure, so they will either approve a
-broken deploy or block a healthy one.
-**Fix**: Replace with concrete checks:
-```
-3. Verify the deploy:
-   - Health endpoint returns 200: `curl https://api.example.com/health`
-   - Error rate in the dashboard stays below 1% for 5 minutes after deploy
-   - No new entries in the error log for the deployed service
-```
-
-### Rollback section contains no procedure
+### 🔴 BLOCKER
+#### [B1] Rollback section contains no procedure
 **Location**: Rollback
-**Problem**: "If something goes wrong, roll back" is a restatement of the section
-title. During an incident the reader needs the command, the decision threshold, and
-who to tell — none are present. This is the section most likely to be read under
-pressure and it is empty.
-**Fix**: Specify the trigger, the command, and the verification:
+**Problem**: "If something goes wrong, roll back" restates the heading. The reader who
+opens this section during an incident gets no trigger, no command, and no one to tell.
+**Fix**:
 ```
-Roll back when the error rate exceeds 5% or the health check fails twice.
+Roll back when [TODO: owner to supply — metric and threshold, e.g. error rate > X% for Y min].
 
-1. Run `deploy rollback --service <name> --to <previous-tag>`
-2. Confirm the health endpoint returns 200
-3. Post in #incidents with the service name and the tag you rolled back to
+1. Run `[TODO: owner to supply — rollback command]`
+2. Confirm [TODO: health check or dashboard] is back to normal
+3. Post in [TODO: channel] with the service name and the version rolled back to
 ```
 
-### Internal contradiction on deploy frequency
-**Location**: Notes
+#### [B2] Step 3 has no success criteria
+**Location**: Steps > item 3
+**Problem**: "Verify the deploy looks good" gives no checks, so the reader will either
+approve a broken deploy or block a healthy one.
+**Fix**: Replace with named checks: "3. Verify: [TODO: health endpoint] returns 200;
+[TODO: dashboard] error rate stays below [TODO: threshold] for [TODO: minutes];
+no new errors in [TODO: log location]."
+
+#### [B3] Contradiction on deploy frequency
+**Location**: Notes (sentences 1 and 4)
 **Problem**: "Deployments happen twice a day" and "Deploys are limited to one per day"
-directly contradict each other. A reader cannot determine the actual policy, and the
-two sentences sit four lines apart.
-**Fix**: Keep one statement. If both are true under different conditions, state the
-condition: "Scheduled deploys run twice daily (10:00 and 16:00). Hotfix deploys are
-limited to one per day outside those windows."
+cannot both be the policy; the reader can't tell which applies.
+**Fix**: Keep one sentence. If both hold under different conditions, name the
+condition, e.g. "Scheduled deploys: [TODO: times]. Hotfixes: [TODO: limit]."
 
-## Major
-
-### Step 2 hides the entire automated process
-**Location**: Steps > item 2
-**Problem**: "The pipeline runs" tells the reader nothing about duration, what the
-pipeline does, or how to tell it failed. A newcomer will not know whether waiting
-20 minutes is normal or a sign of a hung job.
-**Fix**: "The CI pipeline runs (~12 min): tests, build, staging deploy, smoke tests.
-Watch it at [link]. A red X on any stage stops the deploy — see Rollback."
-
-### "Release window" and "approval" are stated but not wired into the steps
+### 🟠 MAJOR
+#### [M1] Approval and release window are not in the steps
 **Location**: Notes vs Steps
-**Problem**: The Notes say only the on-call engineer can approve a release and that
-there is a 10:00-11:00 window, but neither constraint appears in the numbered steps.
-A reader following the steps in order will merge outside the window with no approval.
-**Fix**: Move both constraints into the steps as a precondition before item 1.
+**Problem**: Only the on-call engineer can approve, and the window is 10:00–11:00, but
+the numbered steps never say so — a reader following them in order merges any time,
+unapproved.
+**Fix**: Add a step 0: "Before merging: it is between 10:00 and 11:00 [TODO: timezone],
+and the on-call engineer has approved in [TODO: where approval is recorded]."
 
-### Undefined reference: "the runbook"
-**Location**: Notes
-**Problem**: "See the runbook for details" points at a document the reader cannot
-find. No name, no link.
-**Fix**: Link it directly, or remove the sentence.
+#### [M2] Step 2 hides the whole pipeline
+**Location**: Steps > item 2
+**Problem**: "The pipeline runs" doesn't say where to watch it, how long is normal, or
+what failure looks like.
+**Fix**: "2. The CI pipeline runs ([TODO: stages], usually [TODO: duration]). Watch it at
+[TODO: link]. A failed stage stops the deploy — go to Rollback."
 
-### Step 4 has no recipient or channel
+#### [M3] "The runbook" is an unresolvable reference
+**Location**: Notes (sentence 3)
+**Fix**: Link the runbook by name and URL, or delete the sentence.
+
+#### [M4] Step 4 has no recipient
 **Location**: Steps > item 4
-**Problem**: "Notify the team" does not say which team, in which channel, or what to
-include.
-**Fix**: "Post in #deploys: service name, version tag, and a link to the pipeline run."
+**Fix**: "4. Post in [TODO: channel]: service, version, link to the pipeline run."
 
-## Minor
-
-### Opening paragraph is marketing filler
+### 🟡 MINOR
+#### [m1] Opening paragraph is filler
 **Location**: Intro
-**Fix**: Delete "robust and seamless, leveraging best-in-class tooling to empower the
-team." Replace with the document's actual purpose: "How to deploy a service to
-production and roll back if it fails."
+**Fix**: Replace with the purpose: "How to deploy a service to production and roll it
+back if it fails."
 
-### Purpose and scope are never stated
+#### [m2] Scope never stated
 **Location**: (document-wide)
-**Fix**: Add one line under the title naming which services this process covers and
-who it is for.
+**Fix**: One line under the title naming the services this covers and who it is for.
 
-## What Works
-- The numbered-step format is the right shape for this content — it only needs the
-  missing detail filled in
-- Separating Rollback into its own section makes it findable during an incident
+## Checked
+- No commands, paths, or links to verify — the document contains none (itself part of B1/B2).
 
-## Top Priorities
-1. Write the actual rollback procedure — command, threshold, notification
-2. Replace "looks good" in step 3 with concrete verification checks
-3. Resolve the once-vs-twice daily deploy contradiction
-4. Move the release window and on-call approval into the numbered steps
-5. Expand step 2 with pipeline duration and failure signal
+## What works
+- Numbered steps are the right format for this content.
+- Rollback has its own section, so it is findable under pressure once it has content.
 
-## Verdict
-**Not ready** — Three Critical findings mean a new engineer following this document
-would deploy without approval and be unable to roll back.
+## Top priorities
+1. Write the rollback procedure — B1
+2. Replace "looks good" with concrete checks — B2
+3. Resolve the deploy-frequency contradiction — B3
+4. Put the window and approval into the steps — M1
