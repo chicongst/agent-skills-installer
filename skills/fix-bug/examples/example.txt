@@ -64,6 +64,7 @@ User: 1. yes, august was fine  2. no, due date is mandatory  3. both
 
 ## Bug: send_reminders crashes on every export made after the column rename
 **Confidence**: High — reproduced with a failing test, cause traced to billing/loader.py:15, fix verified against the test and the original command
+**Cause location**: code — every CSV exported after the column rename fails, on every machine (local and cron)
 
 ### Symptom
 - **Expected**: `python -m billing.send_reminders invoices_2026-09.csv` prints one reminder per unpaid, overdue invoice
@@ -122,6 +123,7 @@ def test_load_invoices_reads_due_date_from_export_header(tmp_path):
 ```
 It uses `COLUMNS` from billing/export.py, so a future rename breaks this test instead of the cron job.
 
+**Workaround for affected users**: none needed — the fix is a one-line change.
 **Behavior change for other callers**: CSVs with the old `due` header (exported before 3f9c2a1) now load with `due_date = None`. Callers of `load_invoices` (grep: only send_reminders.py:9) run on fresh exports, so none are affected in practice — flagging it in case old files are ever re-processed.
 **Same pattern elsewhere**:
 

@@ -17,12 +17,14 @@
 ## Root Cause
 **Cause**: [one sentence]
 **Where**: [file:line]
+**Cause location**: [code / config / data / client state / environment] — [why only these users/machines, or "all"]
 **Causal chain**: [cause → intermediate effect → observed symptom; explains every observation]
 **Confidence**: [Proven (toggled off and on; competitors eliminated) / Not yet proven — what is missing]
 
 ## Fix
 [Minimal diff or code]
 **Why it works**: [link from fix to cause]
+**Workaround for affected users**: [re-login / re-grant / restart / … — or "none needed"]
 **Risk / behavior change**: [who else is affected; anything that changes for other callers]
 
 ## Verification

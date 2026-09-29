@@ -1,5 +1,6 @@
 ## Bug: [one-line title]
 **Confidence**: High / Medium / Low — [why, in one line]
+**Cause location**: [code / config / data / client state / environment] — [why only these users/machines, or "all users"]
 
 ### Symptom
 - **Expected**: [...]
@@ -17,6 +18,7 @@
 
 ### Fix
 [Minimal diff]
+**Workaround for affected users**: [re-login / re-grant / restart / … — or "none needed"]
 **Behavior change for other callers**: [none / what changes]
 **Same pattern elsewhere**: [grep command + hits, or "none found"]
 

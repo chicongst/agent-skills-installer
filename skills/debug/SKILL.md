@@ -1,6 +1,6 @@
 ---
 name: debug
-description: "Use when a failure is already observable or reproducible (failing test, erroring command, triggerable wrong output, flaky failure you can loop) and you need the proven root cause — rank hypotheses, eliminate them with one-variable experiments, fix only what the evidence confirms. Triggers: \"debug this\", \"find the root cause\", \"fails only in CI\", \"flaky test\", \"tìm root cause\". Not for a low-context bug report (just an error or \"it's not working\") — use `fix-bug`; not for a live production incident — use `sre-engineering`; not for slowness alone — use `performance-review`."
+description: "Use when a failure is already observable or reproducible (failing test, erroring command, triggerable wrong output, flaky failure you can loop) and you need the proven root cause — rank hypotheses, eliminate them with one-variable experiments, fix only what the evidence confirms. Triggers: \"debug this\", \"find the root cause\", \"fails only in CI\", \"flaky test\", \"only some users or machines fail\", \"tìm root cause\". Includes non-code causes: client state, environment, data, config. Not for a low-context bug report (just an error or \"it's not working\") — use `fix-bug`; not for a live production incident — use `sre-engineering`; not for slowness alone — use `performance-review`."
 ---
 
 # Debug
@@ -26,12 +26,15 @@ If something is missing, ask for it (use AskUserQuestion if available, otherwise
 5. **Eliminate, don't just confirm.** Confirmed means toggling that one cause turns the failure off and back on, with competitors eliminated.
 6. **Read the whole error.** Full stack trace, every "caused by", the first error in the log rather than the last.
 7. **Question "can't happen" assumptions** by checking them (print, assert, breakpoint) instead of reasoning about them.
-8. **Ask before any destructive or state-changing move** — `git reset`, `git checkout .`, `git clean`, `git bisect`, switching branches, dropping data, restarting shared services. Protect uncommitted work with `git stash` or a separate worktree.
+8. **Capture before reset.** Restart, reinstall, re-login, clearing a cache, or recreating a container often cures the failure and erases why it happened. Record the state first (logs, versions, granted permissions/scopes, token claims, process memory and uptime, the affected record); then reset one piece at a time as an experiment.
+9. **Ask before any destructive or state-changing move** — `git reset`, `git checkout .`, `git clean`, `git bisect`, switching branches, dropping data, restarting shared services. Protect uncommitted work with `git stash` or a separate worktree.
 
 ## Workflow
 
 ### 1. Pin the symptom
-Quote the exact failure. Note what changed recently (deploy, dependency, config, data, traffic) and what still works — a working neighbour is the best comparison baseline.
+Quote the exact failure. Note what changed recently (deploy, dependency, config, data, traffic, app or OS upgrade on the client) and what still works — a working neighbour is the best comparison baseline.
+
+Pin the **scope**: which users, accounts, devices, hosts, tenants, or installs fail, and which don't, on the same code. If the failure is limited to some of them, the cause lives in what differs — client state (permissions or OAuth scopes granted by an older version, tokens with old claims, local cache or stored settings from a previous build), environment (OS, browser, disk, memory, clock, network, a long-running process), data, or config — until an experiment shows otherwise. Existing users failing while fresh installs work points at state the old version created.
 
 ### 2. Reproduce and minimize
 - Turn the trigger into a single command and rerun it to confirm the failure repeats. If it fails in only one environment, that difference is your first lead.
@@ -39,7 +42,7 @@ Quote the exact failure. Note what changed recently (deploy, dependency, config,
 - Shrink the case: remove inputs, tests, config, and code paths that are not needed for the failure. Stop when removing anything else makes it pass.
 
 ### 3. Hypothesize
-List 3–5 candidate causes. For each, write the observable **prediction** that would distinguish it from the others. Order by likelihood × cheapness of the experiment — a 30-second experiment on a medium-likelihood cause often beats a one-hour experiment on the favourite.
+List 3–5 candidate causes. When the failure is limited to some users or machines, at least one hypothesis must place the cause outside the code (client state, environment, data, or config) — otherwise you are only testing the explanation you already believe. For each, write the observable **prediction** that would distinguish it from the others. Order by likelihood × cheapness of the experiment — a 30-second experiment on a medium-likelihood cause often beats a one-hour experiment on the favourite.
 
 ### 4. Experiment
 Pick the technique that separates the remaining hypotheses fastest:
@@ -48,19 +51,23 @@ Pick the technique that separates the remaining hypotheses fastest:
 |---|---|
 | Isolation vs combination (run alone / with others / reordered) | Passes alone, fails in a suite; test pollution; shared state |
 | Environment diff (run the failing environment's exact command locally, or vice versa) | "Works on my machine", CI-only, one host only |
-| Bisect history (`git bisect`, Rule 8) | It used to work and a known-good commit exists |
+| Bisect history (`git bisect`, Rule 9) | It used to work and a known-good commit exists |
 | Bisect input (halve the data/config until the minimal trigger remains) | Fails on large or specific inputs |
 | Instrument at a boundary (log/assert/print the value entering and leaving a step) | Wrong value appears somewhere in a pipeline |
 | Debugger / breakpoint on the failing line | Need live state at the moment of failure |
 | Force the timing (sleeps, barriers, single-threaded mode, fixed seed) | Race, ordering, or randomness suspected |
 | Swap one dependency (pin version, stub the external call) | Library, network, or third-party behavior suspected |
+| State diff (failing vs working user/device: granted permissions and scopes, decoded token claims, app and OS version, cached data, stored settings, feature flags) | Same code, some users fail; broke for existing users after an upgrade |
+| Rebuild the state (new account, token issued with the old scopes, permission Y denied, previous build's cache) | You need to reproduce a client-state cause on your side |
+| Reset one piece at a time, after capturing it (re-login → re-grant one permission → clear one cache → restart) | The user reports that a restart, reinstall, or re-login "fixed it" |
 
 After each experiment, update the hypothesis table: **Eliminated**, **Confirmed**, or **Open**. If every hypothesis is eliminated, your model of the system is wrong — go back to step 1 and re-check the assumptions you did not test.
 
 ### 5. State the root cause
-Write the causal chain from cause to symptom, with `file:line`. Explain every observation, including the odd ones (why only in CI, why only 1 in N, why the error message says what it says). If an observation is unexplained, the investigation is not done.
+Write the causal chain from cause to symptom, with `file:line`. Explain every observation, including the odd ones (why only in CI, why only 1 in N, why only these users or machines, why a restart cured it, why the error message says what it says). When the trigger is client state or environment, the chain also names the code gap that let that state cause the failure (no check of granted permissions against required ones, no re-consent after an upgrade, no cache invalidation, a generic error that hides the cause) — or states that there is none. If an observation is unexplained, the investigation is not done.
 
 ### 6. Fix at the cause
+- A reset that cures affected users (re-login, re-grant, restart) is a **workaround** — report it separately; the fix removes the code gap so the state can't break the app again, or makes the app detect it and tell the user what to do.
 - Smallest change that removes the cause, not the symptom (no retry around a race, no `try/except` around a wrong value).
 - Check whether the current behavior is relied on elsewhere before changing it; if the fix changes behavior for other callers, call that out separately.
 - Follow the project's existing conventions for code and tests.
@@ -97,12 +104,14 @@ Stop and report instead of guessing. Deliver the report with the root cause mark
 ## Root Cause
 **Cause**: [one sentence]
 **Where**: [file:line]
+**Cause location**: [code / config / data / client state / environment] — [why only these users/machines, or "all"]
 **Causal chain**: [cause → intermediate effect → observed symptom; explains every observation]
 **Confidence**: [Proven (toggled off and on; competitors eliminated) / Not yet proven — what is missing]
 
 ## Fix
 [Minimal diff or code]
 **Why it works**: [link from fix to cause]
+**Workaround for affected users**: [re-login / re-grant / restart / … — or "none needed"]
 **Risk / behavior change**: [who else is affected; anything that changes for other callers]
 
 ## Verification

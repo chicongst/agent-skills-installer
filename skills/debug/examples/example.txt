@@ -88,6 +88,7 @@ H5 experiment:
 ## Root Cause
 **Cause**: `build_invoice` uses a mutable default argument; Python evaluates `discounts=[]` once, at function definition, so every call that omits `discounts` shares one list.
 **Where**: billing.py:1 (the list is mutated at billing.py:4)
+**Cause location**: code — "only in CI" because CI runs the whole suite in one process; locally the test runs alone. Any long-running process (e.g. the API server) accumulates discounts the same way.
 **Causal chain**: test_promo_applied calls `build_invoice` with a promo → line 4 appends `0.1` to the shared default list → test_regular_invoice calls `build_invoice` without `discounts` → gets the same list `[0.1]` → lines 7-8 subtract 10% → total `90.0` → assertion at test_billing.py:13 fails.
 Explains every observation: CI runs the whole module and unittest orders test methods by name, so `test_promo_applied` runs before `test_regular_invoice`; locally only the single test ran, so the default list was still empty. The wrong value is exactly the leaked 10% promo.
 **Confidence**: Proven — the failure turns on with promo → regular order and off with the reverse order or a single test (H3), and the leaked value is observed directly (H5).
@@ -101,6 +102,7 @@ def build_invoice(items, discounts=None):
         ...
 ```
 **Why it works**: A new list is created on every call that omits `discounts`, so no state carries over between calls.
+**Workaround for affected users**: restarting a long-running process clears the shared list — which is exactly why a restart would have looked like a cure. Not a fix; the change above is.
 **Risk / behavior change**: None for callers that omit `discounts`, except that the leak is gone. Callers that pass their own list still have it appended to, as before — that is existing behavior and is left unchanged here; changing it would be a separate behavior change.
 
 Regression test (added to BillingTest; order-independent because it makes both calls itself):
