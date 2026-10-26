@@ -35,7 +35,7 @@ Usage:
 Options:
   --target <claude|windsurf>                      Default: claude
   --scope <global|workspace>                      Default: global
-  --bundle <core|backend|frontend|fullstack|dotnet|all> Default: core
+  --bundle <core|backend|frontend|fullstack|dotnet|node|python|all> Default: core
   --import-github <url>                           Import skill folders from a GitHub repo
   --import-dir <path>                             Import skill folders from a local directory
   --without-support-files                         Do not create support files
@@ -196,6 +196,43 @@ algorithm-review
 mastery
 dotnet-code-review
 dotnet-code-refactor
+dotnet-code-standard
+EOF
+      ;;
+    node)
+      cat <<'EOF'
+architect
+code-review
+code-audit
+debug
+fix-bug
+refactor
+test-writer
+security-review
+docs-writer
+api-design
+pr-review
+algorithm-review
+mastery
+nodejs-code-standard
+EOF
+      ;;
+    python)
+      cat <<'EOF'
+architect
+code-review
+code-audit
+debug
+fix-bug
+refactor
+test-writer
+security-review
+docs-writer
+api-design
+pr-review
+algorithm-review
+mastery
+python-code-standard
 EOF
       ;;
     all)
@@ -223,6 +260,9 @@ algorithm-review
 mastery
 dotnet-code-review
 dotnet-code-refactor
+dotnet-code-standard
+nodejs-code-standard
+python-code-standard
 EOF
       ;;
     *)
@@ -262,7 +302,7 @@ write_skill() {
   # `cp -r src/examples dst/examples` nests as dst/examples/examples when the
   # destination already exists, and a re-install must also drop support files
   # the skill no longer ships.
-  run_cmd rm -rf "$dst/examples"
+  run_cmd rm -rf "$dst/examples" "$dst/references"
   run_cmd rm -f "$dst/template.md"
   if [[ "$WITHOUT_SUPPORT_FILES" -ne 1 ]]; then
     if [[ -f "$src/template.md" ]]; then
@@ -270,6 +310,9 @@ write_skill() {
     fi
     if [[ -d "$src/examples" ]]; then
       run_cmd cp -R "$src/examples" "$dst/examples"
+    fi
+    if [[ -d "$src/references" ]]; then
+      run_cmd cp -R "$src/references" "$dst/references"
     fi
   fi
 
@@ -315,7 +358,7 @@ verify_skill() {
   grep -q "^name: $skill$" "$file" || { log "verify fail $skill: missing/invalid name"; return 1; }
   grep -q '^description: ' "$file" || { log "verify fail $skill: missing description"; return 1; }
 
-  # template.md and examples/ are optional: skills that apply silently (mastery, ui-design)
+  # template.md, examples/ and references/ are optional: skills that apply silently (mastery, ui-design)
   # or embed their output format in SKILL.md have no separate template. Only verify that
   # whatever the source ships was actually copied.
   if [[ "$WITHOUT_SUPPORT_FILES" -ne 1 ]]; then
@@ -325,6 +368,9 @@ verify_skill() {
     fi
     if [[ -d "$src/examples" && ! -d "$dir/examples" ]]; then
       log "verify fail $skill: examples dir not installed"; return 1
+    fi
+    if [[ -d "$src/references" && ! -d "$dir/references" ]]; then
+      log "verify fail $skill: references dir not installed"; return 1
     fi
   fi
 
@@ -435,6 +481,8 @@ Bundles:
   - frontend
   - fullstack
   - dotnet
+  - node
+  - python
   - all
 
 Core skills:
@@ -465,7 +513,7 @@ validate_args() {
   esac
 
   case "$BUNDLE" in
-    core|backend|frontend|fullstack|dotnet|all) ;;
+    core|backend|frontend|fullstack|dotnet|node|python|all) ;;
     *) err "Invalid --bundle: $BUNDLE" ;;
   esac
 }

@@ -1,0 +1,124 @@
+[project]
+name = "todo-api"
+version = "0.1.0"
+description = "Reference FastAPI service: layered feature packages, strict JSON, optimistic concurrency, owner-scoped data."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "alembic>=1.20",
+    "asyncpg>=0.32",
+    "fastapi>=0.162",
+    "limits>=5.8",
+    "opentelemetry-exporter-otlp-proto-http>=1.45",
+    "opentelemetry-instrumentation-asyncpg>=0.66b1",
+    "opentelemetry-instrumentation-fastapi>=0.66b1",
+    "opentelemetry-sdk>=1.45",
+    "pydantic>=2.14",
+    "pydantic-settings>=2.16",
+    "pyjwt[crypto]>=2.15",
+    "sqlalchemy[asyncio]>=2.1",
+    "structlog>=26.1",
+    "uvicorn[standard]>=0.54",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16",
+    "import-linter>=2.15",
+    "mypy>=2.4",
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "pytest-cov>=7.1",
+    "ruff>=0.17",
+    "testcontainers[postgres]>=4.15",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.4,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "A", "ARG", "ASYNC", "B", "BLE", "C4", "DTZ", "E", "ERA", "F", "FAST", "FBT", "G", "I", "LOG",
+    "N", "PERF", "PIE", "PL", "PT", "PTH", "RET", "RSE", "RUF", "S", "SIM", "SLF", "T20", "TID", "TRY", "UP", "W",
+]
+ignore = ["PLR0913", "PLR0917"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "SLF001"]
+"migrations/**" = ["ERA001"]
+"scripts/**" = ["T201"]
+"src/todo_api/shared/clock.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"datetime.datetime.now".msg = "Inject a Clock (todo_api.shared.clock)."
+"datetime.datetime.utcnow".msg = "Inject a Clock (todo_api.shared.clock)."
+"datetime.date.today".msg = "Inject a Clock (todo_api.shared.clock)."
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+untyped_calls_exclude = ["opentelemetry.instrumentation.asyncpg"]
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.*"]
+ignore_missing_imports = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = false
+
+[tool.pytest.ini_options]
+addopts = ["--strict-markers", "--strict-config", "-ra", "--import-mode=importlib", "--cov"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+filterwarnings = ["error"]
+markers = ["postgres: needs Docker (PostgreSQL via Testcontainers)"]
+
+[tool.importlinter]
+root_package = "todo_api"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Feature layers point inwards"
+type = "layers"
+containers = ["todo_api.todos"]
+layers = ["http | infrastructure", "application", "domain"]
+
+[[tool.importlinter.contracts]]
+name = "Domain and application stay framework-free"
+type = "forbidden"
+source_modules = ["todo_api.shared", "todo_api.todos.domain", "todo_api.todos.application"]
+forbidden_modules = [
+    "fastapi", "starlette", "pydantic", "pydantic_settings", "sqlalchemy", "asyncpg", "jwt", "opentelemetry",
+    "todo_api.web", "todo_api.infrastructure", "todo_api.settings", "todo_api.container", "todo_api.main",
+]
+
+[[tool.importlinter.contracts]]
+name = "Shared kernel knows no feature"
+type = "forbidden"
+source_modules = ["todo_api.shared", "todo_api.web", "todo_api.infrastructure"]
+forbidden_modules = ["todo_api.todos"]
+
+[tool.coverage.run]
+branch = true
+source = ["todo_api"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "@overload", "case _:"]

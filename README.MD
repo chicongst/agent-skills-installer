@@ -71,6 +71,9 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 | `document-review` | Strict document review — structure, clarity, consistency, accuracy checked against the repo, actionability; severity-tagged fixes and a verdict |
 | `dotnet-code-review` | .NET / C# code review — blast radius, .NET slop scan, async/DI/EF Core/ASP.NET Core pitfalls, severity-tagged verdict |
 | `dotnet-code-refactor` | Safe .NET / C# refactoring — code smells, risk classification, characterization tests, smallest-change-at-a-time (modifies code) |
+| `dotnet-code-standard` | Writing new .NET / ASP.NET Core backends to large-project standard — layered projects, Result + ProblemDetails, JWT + ownership, EF Core concurrency, Testcontainers; ships a reference `TodoApi` solution |
+| `nodejs-code-standard` | Writing new Node.js / TypeScript backends to large-project standard — feature modules, strict validation, problem+json, ETag concurrency, layer lint rules; ships a reference `todo-api` |
+| `python-code-standard` | Writing new Python backends (FastAPI, SQLAlchemy, uv) to large-project standard — feature packages + import-linter, strict JSON, JWT + ownership, version-guarded writes, structlog + OTel, Testcontainers; ships a reference `todo-api` |
 
 ---
 
@@ -114,8 +117,17 @@ curl -fsSL https://raw.githubusercontent.com/chicongst/agent-skills-installer/ma
 
 - dotnet-code-review
 - dotnet-code-refactor
+- dotnet-code-standard
 
-### `all` = fullstack + dotnet +
+### `node` = core +
+
+- nodejs-code-standard
+
+### `python` = core +
+
+- python-code-standard
+
+### `all` = fullstack + dotnet + node + python +
 
 - document-review
 
@@ -133,6 +145,14 @@ Install bundle
 
 ```sh
 ./setup_agent_skills.sh --bundle backend
+```
+
+Install the coding standard for one stack (core + `<stack>-code-standard`)
+
+```sh
+./setup_agent_skills.sh --bundle python
+./setup_agent_skills.sh --bundle node
+./setup_agent_skills.sh --bundle dotnet
 ```
 
 Install to workspace
@@ -179,7 +199,7 @@ Dry run, list bundles, self-test
 ./setup_agent_skills.sh --self-test
 ```
 
-`--without-support-files` installs only `SKILL.md` (no `template.md` or `examples/`).
+`--without-support-files` installs only `SKILL.md` (no `template.md`, `examples/` or `references/`).
 
 ---
 
@@ -229,7 +249,8 @@ Skill structure
 skill-name/
   SKILL.md            # required: frontmatter with name + description
   template.md         # optional: mirrors the output format in SKILL.md
-  examples/example.txt  # optional: a worked example
+  examples/example.txt  # optional: a worked example (the *-code-standard skills ship a full reference project)
+  references/           # optional: longer material SKILL.md points to (e.g. references/patterns.md)
 ```
 
 ---
